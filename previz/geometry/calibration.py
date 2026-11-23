@@ -140,6 +140,17 @@ def solve_camera(a: dict, W: int, H: int) -> tuple[Cam, dict]:
     return _accept_if_consistent(fit, fit.cam(best), cam0, info)
 
 
+def camera_fit_cost(a: dict, W: int, H: int, vfov: float, pitch: float, roll: float) -> tuple[float, int]:
+    """측정값 하나가 스스로 얼마나 맞는지: solve_camera가 푼 카메라(화각·피치·롤)에서 보정 잔차(사전값·선·상자 직각)의
+    제곱 평균과, 보정에 쓴 선·상자 관측 수. 같은 사진을 여러 번 잰 측정값 가운데 고를 때 쓴다 (보정 결과는 바꾸지 않는다)."""
+    c = a.get("camera") or {}
+    fov_c = clamp(to_float(c.get("vfov_deg"), 55.0), 15.0, 120.0)
+    cam0, info = prior_camera(a, W, H, fov_c)
+    fit = _camera_fit(a, W, H, fov_c, cam0, info)
+    r = fit.residual(np.array([vfov, pitch, roll], dtype=float))
+    return (float(np.mean(r ** 2)) if len(r) else 0.0), len(fit.lines) + len(fit.boxes)
+
+
 def _accept_if_consistent(fit: CameraFit, cam: Cam, cam0: Cam, info: dict) -> tuple[Cam, dict]:
     """보정 후 선 잔차가 크면 선 측정을 버리고 초기 카메라를 쓴다."""
     lr, br = line_residuals(cam, fit.lines, fit.boxes)

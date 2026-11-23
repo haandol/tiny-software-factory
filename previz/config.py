@@ -1,4 +1,4 @@
-"""설정: 파일 경로, 업로드·이미지 한도, Codex 호출 시간·횟수·동시성(환경 변수), 키 형식, 로그 출력."""
+"""설정: 파일 경로, 업로드·이미지 한도, Codex 호출 시간·횟수·측정 표본 수·동시성(환경 변수), 키 형식, 로그 출력."""
 
 from __future__ import annotations
 
@@ -16,6 +16,9 @@ MAX_UPLOAD_BYTES = 30 * 1024 * 1024
 MAX_IMAGE_SIDE = 1280                     # 큰 이미지는 이 크기로 줄여 Codex에 넘긴다 (기하는 줄인 좌표계로 푼다)
 CODEX_TIMEOUT_S = int(os.environ.get("PREVIZ_CODEX_TIMEOUT", "420"))
 CODEX_TRIES = int(os.environ.get("PREVIZ_CODEX_TRIES", "2"))
+# 요청 하나마다 같은 이미지·지시문으로 turn을 몇 번 돌려 측정값을 모을지 (그 가운데 보정이 가장 잘 맞는 것을 쓴다)
+CODEX_SAMPLES = max(1, int(os.environ.get("PREVIZ_CODEX_SAMPLES", "5")))
+CODEX_SAMPLE_GRACE_S = float(os.environ.get("PREVIZ_CODEX_SAMPLE_GRACE", "60"))   # 과반이 모인 뒤 나머지를 기다리는 시간
 CONCURRENCY = int(os.environ.get("PREVIZ_CONCURRENCY", "8"))
 KEY_RE = re.compile(r"^[a-f0-9]{8,32}$")
 

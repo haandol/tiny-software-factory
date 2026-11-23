@@ -1,0 +1,34 @@
+[SWF-6] 선점: 안정성 최종 목표를 엄격하게 한다: 충실도 차 0.5 이하, 화각 차 0.2° 이하
+[SWF-6] 결과: done (Claude Code $0.30) → var/runs/SWF-6-20261123-212329/run.json
+발견 루프: main 8a800b5 평가
+발견 루프: SWF-7 생성 — [auto] 같은 장면 재생성 시 충실도 차 개선: 홀드아웃 2.12 → 1.31 (최종 목표 0.5)
+발견 루프: SWF-8 생성 — [auto] 같은 장면 재생성 시 화각 차 개선: 홀드아웃 2.78 → 1.49 (최종 목표 0.2)
+[SWF-7] 선점: [auto] 같은 장면 재생성 시 충실도 차 개선: 홀드아웃 2.12 → 1.31 (최종 목표 0.5)
+[SWF-7]   Claude Code 끝: 1614초, $5.00, 도구 호출 73회
+[SWF-7]   통과  holdout:stability.fidelity_delta: 0.8425 (목표 <= 1.31)
+[SWF-7] eval 통과 → 병합과 배포 (커밋 14003fd)
+[SWF-7] 결과: done (Claude Code $5.00, Codex 호출 20회) → var/runs/SWF-7-20261123-212840/run.json
+[SWF-8] 선점: [auto] 같은 장면 재생성 시 화각 차 개선: 홀드아웃 2.78 → 1.49 (최종 목표 0.2)
+[SWF-8]   Claude Code 끝: 2166초, $5.08, 도구 호출 66회
+[SWF-8]   실패  holdout:stability.fov_delta_deg: 13.6661 (목표 <= 1.49)
+[SWF-8]   Claude Code 끝: 1938초, $5.03, 도구 호출 87회
+[SWF-8]   통과  holdout:stability.fov_delta_deg: 0.2429 (목표 <= 1.49)
+[SWF-8] eval 통과 → 병합과 배포 (커밋 2aecb70)
+[SWF-8] 결과: done (Claude Code $10.11, Codex 호출 40회) → var/runs/SWF-8-20261123-215929/run.json
+발견 루프: main 5c3a90e 평가
+발견 루프: SWF-9 생성 — [auto] 같은 장면 재생성 시 충실도 차 개선: 홀드아웃 0.62 → 0.56 (최종 목표 0.5)
+[SWF-9] 선점: [auto] 같은 장면 재생성 시 충실도 차 개선: 홀드아웃 0.62 → 0.56 (최종 목표 0.5)
+[SWF-9]   Claude Code 끝: 1807초, $5.06, 도구 호출 73회
+[SWF-9]   통과  holdout:stability.fidelity_delta: 0.5025 (목표 <= 0.56)
+[SWF-9] eval 통과 → 병합과 배포 (커밋 ce1ab6f)
+[SWF-9] 결과: done (Claude Code $5.06, Codex 호출 20회) → var/runs/SWF-9-20261123-231650/run.json
+발견 루프: main 33a3085 평가
+발견 루프: SWF-10 생성 — [auto] 같은 장면 재생성 시 충실도 차 개선: 홀드아웃 0.73 → 0.61 (최종 목표 0.5)
+[SWF-10] 선점: [auto] 같은 장면 재생성 시 충실도 차 개선: 홀드아웃 0.73 → 0.61 (최종 목표 0.5)
+[SWF-10]   Claude Code 끝: 2771초, $5.32, 도구 호출 56회
+[SWF-10]   실패  holdout:stability.fidelity_delta: 1.1425 (목표 <= 0.61)
+[SWF-10]   Claude Code 끝: 2874초, $4.94, 도구 호출 57회
+[SWF-10]   실패  holdout:stability.fidelity_delta: 1.1375 (목표 <= 0.61)
+[SWF-10]   Claude Code 끝: 3353초, $5.04, 도구 호출 51회
+[SWF-10]   실패  holdout:stability.fidelity_delta: 1.0725 (목표 <= 0.61)
+[SWF-10] 결과: needs_human (Claude Code $15.30, Codex 호출 60회) → var/runs/SWF-10-20261123-235325/run.json

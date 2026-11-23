@@ -56,7 +56,7 @@ flowchart LR
 | 02-autonomous-worker.md | 에이전트 하나가 eval을 통과할 때까지 혼자 수렴하게 만드는 법 | `step-2-worker` |
 | 03-refactor.md | 커진 코드를 모듈로 나누고, 리팩터링을 생산 루프의 단계로 넣는 법 | `step-3-refactor` |
 | 04-pipeline.md | 이슈 트래커를 제어판으로 쓰고 실패를 사람에게 넘기는 법 | `step-4-pipeline` |
-| 05-discovery.md | 점수 차이를 단계적 목표의 다음 요구사항으로 바꾸는 법 | `step-5-discovery` |
+| 05-discovery.md | 점수와 목표의 차이를 다음 요구사항으로 바꾸고, 측정 잡음의 한계를 보는 법 | `step-5-discovery` |
 | 06-learning.md | 실행 기록으로 하네스를 고치고 검증하는 법 | `step-6-learning` |
 | 07-apply-to-your-project.md | 현재 프로젝트에 옮기는 순서와 점검표 | `step-7-demo` |
 

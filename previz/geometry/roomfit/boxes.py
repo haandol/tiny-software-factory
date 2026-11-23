@@ -103,12 +103,28 @@ def consensus_boxes(analyses: list[dict]) -> list[tuple]:
     return [_median_box(analyses, members) for members in match_objects(analyses)]
 
 
+def _cylinder_votes(analyses: list[dict], members: list) -> tuple[int, int]:
+    """(원기둥이라고 한 표본 수, 짝지은 표본 수)."""
+    shapes = [str(analyses[si]["objects"][oi].get("shape", "")).startswith("cyl") for si, oi in members]
+    return sum(shapes), len(shapes)
+
+
 def consensus_cylinders(analyses: list[dict]) -> list[tuple]:
     """표본 과반이 찾고, 그 과반이 원기둥이라고 한 물체의 bbox 중앙값."""
     out = []
     for members in match_objects(analyses):
-        shapes = [str(analyses[si]["objects"][oi].get("shape", "")).startswith("cyl") for si, oi in members]
-        if 2 * sum(shapes) > len(shapes):
+        cyl, n = _cylinder_votes(analyses, members)
+        if 2 * cyl > n:
+            out.append(_median_box(analyses, members))
+    return out
+
+
+def consensus_cuboids(analyses: list[dict]) -> list[tuple]:
+    """표본 과반이 찾고, 그 과반이 상자라고 한 물체의 bbox 중앙값."""
+    out = []
+    for members in match_objects(analyses):
+        cyl, n = _cylinder_votes(analyses, members)
+        if 2 * (n - cyl) > n:
             out.append(_median_box(analyses, members))
     return out
 

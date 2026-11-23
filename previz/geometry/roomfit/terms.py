@@ -1,4 +1,5 @@
-"""벽 경계 밖의 카메라 관측 항: 사진에서 잰 원기둥 윗면 타원과 표본 지평선을 x → 잔차 함수로 만든다."""
+"""벽 경계 밖의 카메라 관측 항: 사진에서 잰 원기둥 윗면 타원, 상자 모서리 선분(boxlines.py), 표본 지평선을
+x → 잔차 함수로 만든다."""
 
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ from ..camera import horizon_row
 from ..edges import EdgeImage
 from ..ellipses import measure_top, residuals
 from .boxes import consensus_boxes, consensus_cylinders, occluders
+from .boxlines import box_term
 from .model import bounded_focal_px, camera_up, focal_px
 
 ELLIPSE_CAUCHY = 3.0          # 타원 잔차(σ 단위)의 견고 무게 폭: 잘못 잰 타원 하나가 답을 끌지 못하게
@@ -49,10 +51,11 @@ def horizon_term(v0: float, H: int):
     return extra
 
 
-def camera_terms(tops: list, v0: float | None, W: int, H: int):
-    """타원 항과 지평선 항(있는 것만)을 이어 붙인 x → 잔차 함수. 둘 다 없으면 None."""
-    fns = [f for f in (ellipse_term(tops, W, H) if tops else None, horizon_term(v0, H) if v0 is not None else None)
-           if f is not None]
+def camera_terms(tops: list, v0: float | None, W: int, H: int, box_groups: list | None = None):
+    """타원 항, 상자 선분 항, 지평선 항(있는 것만)을 이어 붙인 x → 잔차 함수. 모두 없으면 None."""
+    fns = [f for f in (ellipse_term(tops, W, H) if tops else None,
+                       box_term(box_groups, W, H) if box_groups else None,
+                       horizon_term(v0, H) if v0 is not None else None) if f is not None]
     if not fns:
         return None
     return lambda x: np.concatenate([f(x) for f in fns])

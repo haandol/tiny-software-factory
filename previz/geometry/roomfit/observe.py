@@ -17,6 +17,7 @@ VERT_TRIM = 0.18              # 물체 위아래(원기둥 뚜껑·상자 윗면
 MIN_CONTRAST = 2.0            # 둘레보다 이만큼 뚜렷해야 경계로 본다
 MIN_SUPPORT = 0.2             # 잰 칸 가운데 이만큼에서 경계점이 잡혀야 쓴다
 MIN_LENGTH = 24.0             # 이보다 짧게 잡힌 경계는 쓰지 않는다 (픽셀)
+CORNER_CONTRAST_CAP = 20.0    # 모서리 후보를 견줄 때 대비는 이만큼에서 자른다 (뚜렷한 것끼리는 길이로 가린다)
 
 
 def accepted(s: Segment | None, min_support: float = MIN_SUPPORT, min_length: float = MIN_LENGTH) -> bool:
@@ -100,21 +101,38 @@ def _corner_ends(model: RoomModel, x: np.ndarray, side: str, first: dict, lines:
     return pb, pt
 
 
-def find_corners(E: EdgeImage, model: RoomModel, x: np.ndarray, first: dict, lines: dict, boxes: list) -> dict:
-    """뒷벽과 옆벽이 만나는 세로 모서리: 찾은 바닥선(없으면 Codex 선) 교점에서 윗변 교점(없으면 연직 방향)까지를
-    둘레 CORNER_RADIUS 안에서 찾는다."""
+def _corner_guesses(model: RoomModel, x: np.ndarray, side: str, first: dict, lines: dict, analyses: list[dict]) -> list:
+    """모서리 세로선의 예상 위치 후보들: 찾은 경계(없으면 Codex 선 중앙값)의 교점, Codex 선 중앙값만의 교점,
+    표본마다 Codex 선의 교점. 찾은 바닥선 하나가 다른 경계(물체 윗면, 그림자)를 잡았으면 첫 후보는 엉뚱한 곳을 가리킨다."""
+    out = []
+    for f, ln in [(first, lines), ({}, lines)] + [({}, codex_lines(a)) for a in analyses]:
+        ends = _corner_ends(model, x, side, f, ln)
+        ends = None if ends is None else clip_inset(ends[0], ends[1], model.W, model.H)
+        if ends is not None and all(max(np.linalg.norm(ends[0] - e[0]), np.linalg.norm(ends[1] - e[1])) > 4.0
+                                    for e in out):
+            out.append(ends)
+    return out
+
+
+def _corner_quality(s: Segment) -> float:
+    """모서리 후보 선분의 좋음: 잡힌 길이 × 대비(포화)."""
+    return s.support * s.length * min(s.contrast, CORNER_CONTRAST_CAP)
+
+
+def find_corners(E: EdgeImage, model: RoomModel, x: np.ndarray, first: dict, lines: dict, boxes: list,
+                 analyses: list[dict] = ()) -> dict:
+    """뒷벽과 옆벽이 만나는 세로 모서리: 예상 위치 후보(_corner_guesses)마다 바닥선 교점에서 윗변 교점(없으면 연직
+    방향)까지를 둘레 CORNER_RADIUS 안에서 찾고, 가장 뚜렷하게 길게 잡힌 것을 쓴다."""
     out = {}
     for side in ("left", "right"):
         name = f"corner_{side}"
         if name not in model.edges():
             continue
-        ends = _corner_ends(model, x, side, first, lines)
-        ends = None if ends is None else clip_inset(ends[0], ends[1], model.W, model.H)
-        if ends is None:
-            continue
-        seg = snap(E, ends[0], ends[1], CORNER_RADIUS, boxes, max_tilt=12.0)
-        if accepted(seg):
-            out[name] = seg
+        segs = [snap(E, e[0], e[1], CORNER_RADIUS, boxes, max_tilt=12.0)
+                for e in _corner_guesses(model, x, side, first, lines, analyses)]
+        segs = [s for s in segs if accepted(s)]
+        if segs:
+            out[name] = max(segs, key=_corner_quality)
     return out
 
 
@@ -155,6 +173,6 @@ def first_observations(E: EdgeImage, model: RoomModel, x: np.ndarray, analyses: 
     """모델과 무관하게 한 번 정하는 관측: Codex 벽 선 둘레의 경계, 그 교점 둘레의 벽 모서리 세로선, 물체 옆선.
     x(표본 초기값 중앙값)는 연직 방향을 잴 때만 쓴다."""
     first = {k: v for k, v in snap_codex_lines(E, analyses, boxes).items() if k in model.edges()}
-    first.update(find_corners(E, model, x, first, lines, boxes))
+    first.update(find_corners(E, model, x, first, lines, boxes, analyses))
     first.update({f"vertical_{i}": sg for i, sg in enumerate(object_verticals(E, model, x, objects, VERT_RADIUS))})
     return first

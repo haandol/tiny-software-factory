@@ -24,7 +24,7 @@ def refit_with_tops(fit: FitResult, prior: Prior) -> np.ndarray:
     for fov in (fit.fov,) + FOV_STARTS:
         hold = prior.held(fov, FOV_HOLD_SIG)
         try:
-            x = fit_points(fit.model, with_fov(fit.x, fov), fit.obs, hold, rounds=1, warm=True)
+            x = fit_points(fit.model, with_fov(fit.x, fov), fit.obs, hold, rounds=3)
             x = fit_points(fit.model, x, fit.obs, prior, rounds=2, warm=True)
         except FIT_ERRORS:
             continue
@@ -43,7 +43,7 @@ def fov_profile(fit: FitResult, prior: Prior) -> list[tuple[float, float, np.nda
             continue
         hold = prior.held(fov, FOV_HOLD_SIG)
         try:
-            x = fit_points(fit.model, with_fov(fit.x, fov), fit.obs, hold, rounds=2, warm=True)
+            x = fit_points(fit.model, with_fov(fit.x, fov), fit.obs, hold, rounds=3)
         except FIT_ERRORS:
             continue
         out.append((fov, total_cost(fit.model, x, fit.obs, prior), x))

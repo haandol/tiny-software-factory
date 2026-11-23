@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>tiny previz</title><link rel="icon" href="data:,">
+<style>body{font:15px system-ui,sans-serif;max-width:640px;margin:40px auto;padding:0 16px;color:#222}
+#out{margin-top:16px;white-space:pre-wrap}</style></head><body>
+<h1>tiny previz</h1>
+<p>사진(PNG/JPEG)을 올리면 같은 구도의 three.js 프리비즈 장면을 만든다.</p>
+<input type="file" id="f" accept="image/png,image/jpeg">
+<div id="out"></div>
+<script>
+const out = document.getElementById('out');
+document.getElementById('f').onchange = async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  out.textContent = '업로드 중…';
+  const res = await fetch('/api/requests', { method: 'POST', headers: { 'Content-Type': file.type || 'image/png' }, body: file });
+  const body = await res.json();
+  if (res.status !== 202) { out.textContent = '실패: ' + (body.error || res.status); return; }
+  out.textContent = `키 ${body.key} — 생성 중…`;
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const s = await (await fetch(`/api/requests/${body.key}`)).json();
+    if (s.status === 'done') { location.href = `/view?key=${body.key}`; return; }
+    if (s.status === 'failed') { out.textContent = `실패: ${s.error || ''}`; return; }
+  }
+};
+</script></body></html>

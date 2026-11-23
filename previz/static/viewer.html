@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<title>previz</title>
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;height:100%;background:#16181c;overflow:hidden;font:13px system-ui,sans-serif;color:#e8e8e8}
+#stage{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+#wrap{position:relative;line-height:0}
+#wrap canvas{display:block;touch-action:none;cursor:grab}
+#ref{position:absolute;left:0;top:0;width:100%;height:100%;opacity:.5;pointer-events:none;display:none}
+#hud{position:absolute;left:8px;top:8px;display:none;gap:6px;z-index:2}
+body.ui #hud{display:flex}
+#hud button{background:#000a;color:#fff;border:1px solid #fff4;border-radius:4px;padding:4px 8px;cursor:pointer;font:inherit}
+#msg{position:absolute;left:0;right:0;top:45%;text-align:center;font-size:15px}
+</style>
+<script type="importmap">{"imports": {"three": "/vendor/three.module.js"}}</script>
+</head><body>
+<div id="stage"><div id="wrap"><img id="ref" alt=""></div></div>
+<div id="hud"><button id="b-ref">원본 겹쳐 보기</button><button id="b-reset">원래 시점</button></div>
+<div id="msg"></div>
+<script type="module">
+import * as THREE from 'three';
+
+const key = new URLSearchParams(location.search).get('key') || '';
+let resolveReady;
+const P = window.__PREVIZ__ = { key, scene: null, camera: null, ready: new Promise((r) => (resolveReady = r)) };
+const $ = (id) => document.getElementById(id);
+const say = (t) => { $('msg').textContent = t; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+for (const ev of ['pointermove', 'touchstart', 'keydown']) addEventListener(ev, () => document.body.classList.add('ui'), { once: true });
+
+async function waitDone() {
+  if (!/^[a-f0-9]{8,32}$/.test(key)) { say('키가 올바르지 않다'); return false; }
+  for (;;) {
+    const res = await fetch(`/api/requests/${key}`, { cache: 'no-store' });
+    const s = res.ok ? await res.json() : { status: 'missing' };
+    if (s.status === 'done') return true;
+    if (s.status === 'failed') { say('장면 생성 실패: ' + (s.error || '')); return false; }
+    if (s.status !== 'pending') { say('알 수 없는 키'); return false; }
+    say('장면 생성 중…');
+    await sleep(2000);
+  }
+}
+
+async function main() {
+  if (!(await waitDone())) return;
+  const { build } = await import(`/scenes/${key}.js`);
+  const { scene, camera } = build(THREE);
+  const aspect = camera.aspect;
+  const home = { p: camera.position.clone(), q: camera.quaternion.clone() };
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  $('wrap').prepend(renderer.domElement);
+  const render = () => renderer.render(scene, camera);
+  const layout = () => {
+    let w = innerWidth, h = innerHeight;
+    if (w / h > aspect) w = Math.round(h * aspect); else h = Math.round(w / aspect);
+    renderer.setSize(w, h);
+    camera.aspect = aspect; camera.updateProjectionMatrix();
+    render();
+  };
+  layout();
+  addEventListener('resize', layout);
+  say('');
+  Object.assign(P, { scene, camera, renderer });
+  resolveReady(P);
+
+  // 원본 겹쳐 보기
+  const ref = $('ref');
+  ref.src = `/api/requests/${key}/image`;
+  $('b-ref').onclick = () => { ref.style.display = ref.style.display === 'block' ? 'none' : 'block'; };
+
+  // 간단한 궤도 보기: 끌어서 회전, 휠로 앞뒤, '원래 시점'으로 복귀
+  const pivot = new THREE.Vector3();
+  const objs = []; scene.traverse((o) => { if (o.isMesh && o.userData.role === 'object') objs.push(o); });
+  if (objs.length) { objs.forEach((o) => pivot.add(o.position)); pivot.divideScalar(objs.length); }
+  else pivot.copy(camera.position).add(camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(4));
+  pivot.y = Math.max(pivot.y, 0.3);
+  let drag = null;
+  const canvas = renderer.domElement;
+  canvas.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener('pointerup', () => { drag = null; });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag = { x: e.clientX, y: e.clientY };
+    const off = camera.position.clone().sub(pivot);
+    const sph = new THREE.Spherical().setFromVector3(off);
+    sph.theta -= dx * 0.008; sph.phi = Math.min(Math.max(sph.phi - dy * 0.008, 0.05), Math.PI / 2 - 0.02);
+    camera.position.copy(pivot).add(new THREE.Vector3().setFromSpherical(sph));
+    camera.lookAt(pivot); render();
+  });
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const off = camera.position.clone().sub(pivot).multiplyScalar(Math.exp(e.deltaY * 0.001));
+    camera.position.copy(pivot).add(off); camera.lookAt(pivot); render();
+  }, { passive: false });
+  $('b-reset').onclick = () => { camera.position.copy(home.p); camera.quaternion.copy(home.q); render(); };
+}
+
+main().catch((e) => { say('뷰어 오류: ' + e.message); console.warn(e); });
+</script>
+</body></html>

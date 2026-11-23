@@ -84,8 +84,8 @@ window.__PREVIZ__ = {
 | 물체 색 (`objects.color_delta_e`) | 대표 색 차이 ΔE (CIE76) | 15 이하 |
 | 재투영 일치 (`reprojection.iou`) | 같은 카메라로 다시 그린 물체 실루엣과 정답 실루엣의 IoU | 0.7 이상 |
 | 뷰어 오류 (`viewer.console_errors`) | 콘솔 오류와 페이지 예외 수 | 0 |
-| 안정성: 충실도 차 (`stability.fidelity_delta`) | 홀드아웃 장면마다 두 요청 결과의 충실도 차 절댓값, 장면 평균 | 1 이하 |
-| 안정성: 화각 차 (`stability.fov_delta_deg`) | 홀드아웃 장면마다 두 요청 결과가 추정한 수직 FOV 차 절댓값, 장면 평균 | 0.5° 이하 |
+| 안정성: 충실도 차 (`stability.fidelity_delta`) | 홀드아웃 장면마다 두 요청 결과의 충실도 차 절댓값, 장면 평균 | 0.5 이하 |
+| 안정성: 화각 차 (`stability.fov_delta_deg`) | 홀드아웃 장면마다 두 요청 결과가 추정한 수직 FOV 차 절댓값, 장면 평균 | 0.2° 이하 |
 | 생성 시간 (`run.seconds`) | 요청부터 `done`까지 | 측정 후 결정 |
 
 충실도 점수(`fidelity`, 0~100)는 다음과 같다. 물체를 하나도 맞히지 못하면 카메라가 맞아도 0점이다. 프리비즈의 핵심이 물체 배치이기 때문이다.

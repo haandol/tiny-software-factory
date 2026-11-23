@@ -14,6 +14,10 @@ LABELS = {                               # 이름: (색, 설명)
 }
 NEEDS_HUMAN = "Needs Human"
 
+# 트래커 비밀값의 환경 변수 이름. 에이전트·제품 하위 프로세스 환경에서 지운다 (Symphony SPEC §15.3과 같은 규칙).
+# 하위 프로세스가 이 키를 가지면 이슈 본문에 섞인 지시로 팩토리를 거치지 않고 트래커를 바꿀 수 있다.
+SECRET_ENV_NAMES = ["LINEAR_API_KEY"]
+
 
 def linear(query: str, variables: dict | None = None) -> dict:
     key = os.environ.get("LINEAR_API_KEY")
@@ -90,3 +94,77 @@ def setup_team(key: str | None = None) -> None:
            {"input": {"issueId": issue["id"], "body": "댓글 쓰기 시험"}})
     linear("""mutation($id: String!) { issueDelete(id: $id) { success } }""", {"id": issue["id"]})
     print(f"시험  이슈 {issue['identifier']} 생성 → 댓글 → 삭제 성공")
+
+
+# --- 어댑터: 이슈 읽기, 상태 이동, 댓글, 첨부 ---------------------------------------
+# Symphony SPEC §11처럼 읽기는 상태 목록 조회와 ID 조회 두 가지다. 쓰기는 에이전트가 아니라 컨트롤러만 한다.
+
+FACTORY_MARK = "**[factory]**"           # 팩토리가 쓴 댓글의 머리. 사람 댓글과 구분한다
+
+ISSUE_FIELDS = """id identifier title description priority createdAt url
+  state { name type } labels { nodes { name } }
+  comments(first: 100) { nodes { body createdAt } }"""
+
+
+def normalize(node: dict) -> dict:
+    return {"id": node["id"], "identifier": node["identifier"], "title": node["title"],
+            "description": node.get("description") or "", "priority": node.get("priority"),
+            "created_at": node.get("createdAt"), "url": node.get("url"), "state": node["state"]["name"],
+            "labels": sorted({l["name"].strip().lower() for l in node["labels"]["nodes"]}),
+            "comments": sorted(node["comments"]["nodes"], key=lambda c: c["createdAt"])}
+
+
+def fetch_issues(states: list[str]) -> list[dict]:
+    if not states:
+        return []
+    data = linear(f"""query($key: String!, $states: [String!]) {{
+        issues(first: 100, filter: {{ team: {{ key: {{ eq: $key }} }}, state: {{ name: {{ in: $states }} }} }})
+        {{ nodes {{ {ISSUE_FIELDS} }} }} }}""", {"key": team_key(), "states": states})
+    return [normalize(n) for n in data["issues"]["nodes"]]
+
+
+def fetch_issue(issue_id: str) -> dict | None:
+    data = linear(f"""query($id: String!) {{ issue(id: $id) {{ {ISSUE_FIELDS} }} }}""", {"id": issue_id})
+    return normalize(data["issue"]) if data.get("issue") else None
+
+
+def move(issue: dict, state_name: str) -> None:
+    states = {s["name"]: s["id"] for s in linear_team()["states"]["nodes"]}
+    linear("""mutation($id: String!, $state: String!) { issueUpdate(id: $id, input: { stateId: $state }) { success } }""",
+           {"id": issue["id"], "state": states[state_name]})
+
+
+def comment(issue: dict, body: str) -> None:
+    linear("""mutation($input: CommentCreateInput!) { commentCreate(input: $input) { success } }""",
+           {"input": {"issueId": issue["id"], "body": f"{FACTORY_MARK} {body}"}})
+
+
+def upload(path) -> str | None:
+    """파일을 Linear 저장소에 올리고 댓글에 넣을 수 있는 주소를 돌려준다. 실패하면 None."""
+    from pathlib import Path
+    path = Path(path)
+    if not path.exists():
+        return None
+    data = path.read_bytes()
+    try:
+        up = linear("""mutation($type: String!, $name: String!, $size: Int!) {
+            fileUpload(contentType: $type, filename: $name, size: $size) {
+              success uploadFile { uploadUrl assetUrl headers { key value } } } }""",
+                    {"type": "image/png", "name": path.name, "size": len(data)})["fileUpload"]["uploadFile"]
+        headers = {"Content-Type": "image/png", "Cache-Control": "public, max-age=31536000"}
+        headers.update({h["key"]: h["value"] for h in up["headers"]})
+        req = urllib.request.Request(up["uploadUrl"], data=data, method="PUT", headers=headers)
+        urllib.request.urlopen(req, timeout=60).close()
+        return up["assetUrl"]
+    except Exception as e:  # 첨부 실패는 실행 결과에 영향을 주지 않는다
+        print(f"  첨부 업로드 실패 ({path.name}): {e}")
+        return None
+
+
+def create_issue(title: str, description: str, labels: list[str] = (), state: str = "Todo") -> dict:
+    team = linear_team()
+    label_ids = [l["id"] for l in team["labels"]["nodes"] if l["name"] in labels]
+    state_id = next(s["id"] for s in team["states"]["nodes"] if s["name"] == state)
+    return linear("""mutation($input: IssueCreateInput!) { issueCreate(input: $input) { issue { id identifier url } } }""",
+                  {"input": {"teamId": team["id"], "title": title, "description": description,
+                             "labelIds": label_ids, "stateId": state_id}})["issueCreate"]["issue"]

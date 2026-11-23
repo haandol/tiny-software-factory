@@ -203,45 +203,46 @@ def cmd_agent(args):
     shot(doc(body, TIMELINE_CSS), Path(args.out), args.width)
 
 
-def cmd_run(args):
-    """run.json 하나를 시도별 수용 조건·점수·비용 표로 그린다."""
-    rec = json.loads(Path(args.run_json).read_text())
-    boxes = []
-    for a in rec["attempts"]:
-        conds = "".join(f'<div class="cond {"ok" if c["ok"] else "bad"}">{"통과" if c["ok"] else "실패"} '
-                        f'{html.escape(c["name"])}: {html.escape(str(c["detail"]))}</div>'
-                        for c in a["verdict"]["conditions"])
-        sc, cl = a["score"], a["claude"]
-        gen = a.get("generation_seconds") or []
-        boxes.append(
-            f'<div class="box"><b>시도 {a["attempt"]}</b> · 커밋 {a["commit"]} · '
-            f'{"<span class=ok>eval 통과</span>" if a["verdict"]["passed"] else "<span class=bad>eval 실패</span>"}<br>'
+def _attempt_box(a: dict) -> str:
+    conds = "".join(f'<div class="cond {"ok" if c["ok"] else "bad"}">{"통과" if c["ok"] else "실패"} '
+                    f'{html.escape(c["name"])}: {html.escape(str(c["detail"]))}</div>' for c in a["verdict"]["conditions"])
+    sc, cl, gen = a.get("score") or {}, a["claude"], a.get("generation_seconds") or []
+    verdict = "<span class=ok>eval 통과</span>" if a["verdict"]["passed"] else "<span class=bad>eval 실패</span>"
+    gen_text = f", 생성 {min(gen):.0f}~{max(gen):.0f}초" if gen else ""
+    return (f'<div class="box"><b>시도 {a["attempt"]}</b> · 커밋 {a["commit"]} · {verdict}<br>'
             f'<span class="k">Claude Code {cl["seconds"]}초, ${cl["cost_usd"] or 0:.2f}, 도구 {cl["tool_calls"]}회</span>'
-            f'<span class="k">공개 {sc["public"]} / 홀드아웃 {sc["holdout"]} / main {sc["main_same_seeds"]}</span>'
-            f'<span class="k">Codex {a["codex_calls"]}회'
-            + (f', 생성 {min(gen):.0f}~{max(gen):.0f}초' if gen else "") + f'</span>{conds}</div>')
-    f = rec.get("refactor") or {}
-    if f.get("ran"):
-        b, a = f["code_before"], f["code_after"]
-        rows = "".join(f'<div class="cond">{k}: {b[k]} → <b>{a[k]}</b></div>' for k in
-                       ("code.files", "code.total_lines", "code.max_file_lines", "code.max_function_lines",
-                        "code.max_complexity", "code.long_functions"))
-        checks = " · ".join(f'<span class="{"ok" if v else "bad"}">{k} {"통과" if v else "실패"}</span>'
-                            for k, v in (f.get("checks") or {}).items())
-        sc, cl = f.get("score") or {}, f["claude"]
-        boxes.append(
-            f'<div class="box"><b>리팩터링 단계</b> · 커밋 {f.get("commit")} · '
-            f'{"<span class=ok>수용</span>" if f.get("accepted") else "<span class=bad>거부</span>"} · {checks}<br>'
+            f'<span class="k">공개 {sc.get("public")} / 홀드아웃 {sc.get("holdout")} / main {sc.get("main_same_seeds")}</span>'
+            f'<span class="k">Codex {a.get("codex_calls", 0)}회{gen_text}</span>{conds}</div>')
+
+
+def _refactor_box(f: dict) -> str:
+    if not f:
+        return ""
+    if not f.get("ran"):
+        return f'<div class="box"><b>리팩터링 단계</b> · 건너뜀 ({html.escape(f.get("reason", ""))})</div>'
+    b, a = f["code_before"], f["code_after"]
+    rows = "".join(f'<div class="cond">{k}: {b[k]} → <b>{a[k]}</b></div>' for k in
+                   ("code.files", "code.total_lines", "code.max_file_lines", "code.max_function_lines",
+                    "code.max_complexity", "code.long_functions"))
+    checks = " · ".join(f'<span class="{"ok" if v else "bad"}">{k} {"통과" if v else "실패"}</span>'
+                        for k, v in (f.get("checks") or {}).items())
+    sc, cl = f.get("score") or {}, f["claude"]
+    verdict = "<span class=ok>수용</span>" if f.get("accepted") else "<span class=bad>거부</span>"
+    return (f'<div class="box"><b>리팩터링 단계</b> · 커밋 {f.get("commit")} · {verdict} · {checks}<br>'
             f'<span class="k">Claude Code {cl["seconds"]}초, ${cl["cost_usd"] or 0:.2f}, 도구 {cl["tool_calls"]}회</span>'
             f'<span class="k">공개 {sc.get("public")} / 홀드아웃 {sc.get("holdout")} / main {sc.get("main_same_seeds")}</span>'
             f'<span class="k">Codex {f.get("codex_calls", 0)}회</span>{rows}</div>')
-    elif f:
-        boxes.append(f'<div class="box"><b>리팩터링 단계</b> · 건너뜀 ({html.escape(f.get("reason", ""))})</div>')
+
+
+def cmd_run(args):
+    """run.json 하나를 시도별 수용 조건·점수·비용 표로 그린다."""
+    rec = json.loads(Path(args.run_json).read_text())
+    boxes = [_attempt_box(a) for a in rec["attempts"]] + [_refactor_box(rec.get("refactor") or {})]
     d = rec.get("delivery") or {}
+    merged = f' · main {d.get("merged")} 배포 {d.get("url")}' if d.get("merged") else ""
     tail = (f'<div class="box">결과 <b>{rec["status"]}</b> · Claude Code 합계 ${rec.get("cost_usd", 0):.2f} · '
-            f'Codex {rec.get("codex_calls", 0)}회' + (f' · main {d.get("merged")} 배포 {d.get("url")}' if d.get("merged") else "")
-            + "</div>")
-    body = (f'<div class="wrap"><h1>{html.escape(args.title or rec["run_id"])}</h1>{"".join(boxes)}{tail}</div>')
+            f'Codex {rec.get("codex_calls", 0)}회{merged}</div>')
+    body = f'<div class="wrap"><h1>{html.escape(args.title or rec["run_id"])}</h1>{"".join(boxes)}{tail}</div>'
     shot(doc(body, TIMELINE_CSS), Path(args.out), args.width)
 
 

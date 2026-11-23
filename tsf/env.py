@@ -34,6 +34,9 @@ def agent_env(**extra: str) -> dict[str, str]:
     env.update(AWS_PROFILE="default", AWS_REGION=region, AWS_DEFAULT_REGION=region,
                CLAUDE_CODE_USE_BEDROCK="1")
     env.pop("ANTHROPIC_MODEL", None)      # 모델은 지정하지 않는다
+    from .linear import SECRET_ENV_NAMES
+    for name in SECRET_ENV_NAMES:          # 트래커 비밀값은 하위 프로세스에 넘기지 않는다
+        env.pop(name, None)
     env.update(extra)
     return env
 

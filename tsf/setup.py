@@ -187,8 +187,17 @@ def check_codex() -> str:
     return f"app-server, model={model}, {seconds}초, 입력 토큰 {usage.get('inputTokens') if usage else '?'}"
 
 
+def check_secrets() -> str:
+    """에이전트·제품에 넘기는 환경에 트래커 비밀값이 없는지 확인한다."""
+    from .linear import SECRET_ENV_NAMES
+    leaked = [n for n in SECRET_ENV_NAMES if n in agent_env()]
+    if leaked:
+        raise RuntimeError(f"하위 프로세스 환경에 비밀값이 남아 있다: {', '.join(leaked)}")
+    return f"하위 프로세스 환경에서 {', '.join(SECRET_ENV_NAMES)} 제거됨"
+
+
 def doctor(skip_agents: bool = False) -> bool:
-    checks = [("도구", check_tools), ("로컬 준비", check_local), ("AWS", check_aws),
+    checks = [("도구", check_tools), ("로컬 준비", check_local), ("AWS", check_aws), ("비밀값 격리", check_secrets),
               ("Chromium", check_browser), ("Linear", check_team),
               ("Claude Code", check_claude), ("Codex", check_codex)]
     if skip_agents:

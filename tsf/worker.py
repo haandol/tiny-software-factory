@@ -5,7 +5,9 @@ eval을 통과하지 못하면 실패 증거를 다음 시도에 넘기고, 시�
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -34,9 +36,15 @@ def load_work_item(path: Path) -> dict:
     return item
 
 
+def workspace_key(work_id: str) -> str:
+    """작업 공간 이름: [A-Za-z0-9._-] 밖의 문자는 _로 바꾸고, 바뀌었으면 해시를 붙인다 (Symphony SPEC §4.2)."""
+    key = re.sub(r"[^A-Za-z0-9._-]", "_", work_id)
+    return key if key == work_id else f"{key}-{hashlib.sha256(work_id.encode()).hexdigest()[:16]}"
+
+
 def prepare_worktree(work_id: str) -> tuple[Path, str]:
     """이슈별 브랜치와 worktree. 이미 있으면 이어서 쓴다."""
-    branch, path = f"factory/{work_id}", WORKTREES / work_id
+    branch, path = f"factory/{workspace_key(work_id)}", WORKTREES / workspace_key(work_id)
     exclude = PRODUCT / ".git" / "info" / "exclude"   # 팩토리가 시도마다 git add -A로 커밋하므로 미리 뺀다
     current = exclude.read_text() if exclude.exists() else ""
     missing = [p for p in EXCLUDE_PATTERNS if p not in current.split()]
@@ -191,7 +199,7 @@ class Run:
     def __init__(self, item: dict, log: Callable[[str], None]):
         self.item, self.log = item, log
         self.work_id = str(item["work_item"])
-        self.dir = RUNS / f"{self.work_id}-{datetime.now():%Y%m%d-%H%M%S}"
+        self.dir = RUNS / f"{workspace_key(self.work_id)}-{datetime.now():%Y%m%d-%H%M%S}"
         self.dir.mkdir(parents=True)
         self.wt, self.branch = prepare_worktree(self.work_id)
         self.record = {"run_id": self.dir.name, "work_item": self.work_id, "branch": self.branch,
@@ -259,33 +267,57 @@ def public_items(entry: dict) -> dict:
     return {k: v for k, v in entry.items() if not k.startswith("_")}
 
 
-def run_work_item(item: dict, lab: Lab, log: Callable[[str], None] = print) -> dict:
-    """작업 명세 하나를 끝까지 실행한다: 구현 → 평가 → (재시도) → 리팩터링 → 병합·배포."""
+def _deliver(run: Run, entry: dict, lab: Lab) -> None:
+    """eval을 통과한 시도: 리팩터링 단계를 거쳐 병합하고 배포한다."""
     from .refactor import refactor_stage
+    commit = entry["commit"] or git("rev-parse", "--short", "HEAD", cwd=run.wt)
+    run.record["refactor"] = refactor_stage(run, entry, commit, lab)
+    final = run.record["refactor"].get("accepted_commit") or commit
+    run.say(f"eval 통과 → 병합과 배포 (커밋 {final})")
+    save_notes(run)
+    run.record["delivery"] = merge_and_deploy(run.item, run.wt, run.branch, final)
+    run.record["status"] = "done" if run.record["delivery"]["deployed"] else "needs_human"
+
+
+def _give_up(run: Run, best: dict | None) -> None:
+    """시도를 다 썼다: 병합하지 않고, 최고점 시도를 브랜치 끝에 남겨 사람이 볼 수 있게 한다."""
+    save_notes(run)
+    run.record["status"] = "needs_human"
+    run.record["best_attempt"] = best["attempt"] if best else None
+    if best and best["commit"]:
+        git("reset", "-q", "--hard", best["commit"], cwd=run.wt)
+
+
+def _better(entry: dict, best: dict | None) -> bool:
+    return bool(entry["commit"]) and (best is None or (entry["score"]["public"] or 0) > (best["score"]["public"] or 0))
+
+
+def run_work_item(item: dict, lab: Lab, log: Callable[[str], None] = print,
+                  on_attempt: Callable[[dict], None] | None = None,
+                  should_continue: Callable[[], bool] | None = None) -> dict:
+    """작업 명세 하나를 끝까지 실행한다: 구현 → 평가 → (재시도) → 리팩터링 → 병합·배포.
+
+    on_attempt는 시도마다 결과를 받고(진행 댓글), should_continue는 시도 전마다 불린다(트래커 조정).
+    """
     run = Run(item, log)
     write_context(run.wt, item, lab)
     best = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        if should_continue and not should_continue():
+            run.say("트래커에서 이슈가 더 이상 활성 상태가 아니라 실행을 멈춘다")
+            run.record["status"] = "canceled"
+            return run.finish()
         entry = implement_attempt(run, attempt, lab)
         run.record["attempts"].append(public_items(entry))
         run.save()
-        if entry["commit"] and (best is None or (entry["score"]["public"] or 0) > (best["score"]["public"] or 0)):
-            best = entry
+        if on_attempt:
+            on_attempt(public_items(entry))
+        best = entry if _better(entry, best) else best
         if entry["verdict"]["passed"]:
-            commit = entry["commit"] or git("rev-parse", "--short", "HEAD", cwd=run.wt)
-            run.record["refactor"] = refactor_stage(run, entry, commit, lab)
-            final = run.record["refactor"].get("accepted_commit") or commit
-            run.say(f"eval 통과 → 병합과 배포 (커밋 {final})")
-            save_notes(run)
-            run.record["delivery"] = merge_and_deploy(item, run.wt, run.branch, final)
-            run.record["status"] = "done" if run.record["delivery"]["deployed"] else "needs_human"
+            _deliver(run, entry, lab)
             break
         write_feedback(run.wt, attempt, entry["verdict"], entry["_candidate"], entry["_baseline"],
                        Path(entry["eval_dir"]))
     else:
-        save_notes(run)
-        run.record["status"] = "needs_human"
-        run.record["best_attempt"] = best["attempt"] if best else None
-        if best and best["commit"]:  # 최고점 시도를 브랜치 끝에 남겨 사람이 볼 수 있게 한다
-            git("reset", "-q", "--hard", best["commit"], cwd=run.wt)
+        _give_up(run, best)
     return run.finish()

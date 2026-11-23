@@ -1,0 +1,9 @@
+OK    도구           git, uv, claude, codex, aws
+OK    로컬 준비        codex-home, vendor/three.js, product 저장소
+OK    AWS          default profile 자격 증명 정상 (region us-east-1)
+OK    Chromium     chromium 159.0.8154.6, WebGL2 사용 가능
+OK    Linear       팀 SWF (SW Factory) 라벨·상태 준비 완료
+OK    Claude Code  model=us.anthropic.claude-opus-5-5 cost=$0.0082
+OK    Codex        model=us.openai.gpt-6.2-astra usage={'input_tokens': 11871, 'cached_input_tokens': 0, 'cache_write_input_tokens': 11871, 'output_tokens': 6, 'reasoning_output_tokens': 0}
+
+7/7 통과

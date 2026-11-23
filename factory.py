@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.13"
-# dependencies = ["playwright==1.65.2"]
+# dependencies = ["playwright==1.65.2", "pyyaml>=6"]
 # ///
 """tiny-software-factory — 가장 작은 소프트웨어 팩토리.
 
@@ -9,7 +9,7 @@
 
   0단계  init, doctor, linear-setup   로컬 준비, 환경 점검, Linear 준비
   1단계  eval, calibrate              정답 장면 평가기와 채점기 검증
-  2단계  run                          (예정) 로컬 작업 명세 하나를 끝까지 실행
+  2단계  run                          로컬 작업 명세 하나를 끝까지 실행
   3단계  up                           (예정) Linear를 제어판으로 상주 실행
 
 실행: uv run factory.py <명령>
@@ -929,9 +929,87 @@ class Lab:
         finally:
             page.close()
 
+    def screenshot_html(self, html: str, out: Path, width: int = 1200) -> Path:
+        """HTML 한 장을 그려 PNG로 남긴다. 평가 시트와 Linear 댓글 첨부에 쓴다."""
+        page = self.context.new_page()
+        try:
+            page.set_viewport_size({"width": width, "height": 400})
+            page.set_content(html, wait_until="load")
+            page.screenshot(path=str(out), full_page=True)
+        finally:
+            page.close()
+        return out
+
     def close(self):
         self.browser.close()
         self._pw.stop()
+
+
+SHEET_CSS = """
+body{margin:0;background:#f4f5f7;font-family:'WenQuanYi Zen Hei',sans-serif;color:#1f2328}
+.wrap{padding:20px 24px}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:#57606a;font-size:13px;margin-bottom:14px}
+.row{display:flex;gap:12px;align-items:stretch;background:#fff;border:1px solid #d0d7de;border-radius:8px;
+     padding:10px;margin-bottom:10px}
+.row img{width:320px;height:240px;object-fit:cover;border-radius:4px;background:#ddd}
+.cap{font-size:12px;color:#57606a;margin-top:4px}
+.meta{font-size:13px;min-width:250px}
+.meta b{font-size:15px}
+table{border-collapse:collapse;margin-top:6px}
+td{padding:2px 8px 2px 0;font-size:12px}
+.ok{color:#1a7f37}.bad{color:#cf222e}
+.ph{width:320px;height:240px;display:flex;align-items:center;justify-content:center;background:#eaeef2;
+    border-radius:4px;color:#8c959f;font-size:13px}
+"""
+
+
+def _img_tag(path: Path, caption: str) -> str:
+    if path.exists():
+        data = base64.b64encode(path.read_bytes()).decode()
+        return f'<div><img src="data:image/png;base64,{data}"><div class="cap">{caption}</div></div>'
+    return f'<div><div class="ph">없음</div><div class="cap">{caption}</div></div>'
+
+
+def eval_sheet_html(summary: dict, eval_dir: Path, title: str) -> str:
+    """장면마다 입력 이미지, 뷰어 캡처, 지표를 한 줄로 놓은 평가 시트."""
+    smoke = summary["smoke"]
+    sub = [f"계약 스모크 {'통과' if smoke['passed'] else '실패'}"]
+    for v in ("public", "holdout"):
+        if v in summary:
+            sub.append(f"{v} 평균 충실도 {summary[v]['fidelity']:.1f}")
+    rows = []
+    for r in summary["fixtures"]:
+        m = r["metrics"]
+
+        def cell(key, fmt, good):
+            val = m.get(key)
+            if val is None:
+                return "<td>-</td>"
+            cls = "ok" if good(val) else "bad"
+            return f'<td class="{cls}">{fmt.format(val)}</td>'
+        t = FINAL_TARGETS
+        table = "".join([
+            f"<tr><td>화각 오차</td>{cell('camera.fov_error_deg', '{:.1f}°', lambda v: v <= t['camera.fov_error_deg'][1])}</tr>",
+            f"<tr><td>피치 / 롤 오차</td>{cell('camera.pitch_error_deg', '{:.1f}°', lambda v: v <= 3)}"
+            f"{cell('camera.roll_error_deg', '{:.1f}°', lambda v: v <= 3)}</tr>",
+            f"<tr><td>물체 F1</td>{cell('objects.f1', '{:.2f}', lambda v: v >= t['objects.f1'][1])}</tr>",
+            f"<tr><td>위치 오차</td>{cell('objects.position_error', '{:.3f}', lambda v: v <= t['objects.position_error'][1])}</tr>",
+            f"<tr><td>크기 오차 / ΔE</td>{cell('objects.size_error', '{:.2f}', lambda v: v <= t['objects.size_error'][1])}"
+            f"{cell('objects.color_delta_e', '{:.1f}', lambda v: v <= t['objects.color_delta_e'][1])}</tr>",
+            f"<tr><td>실루엣 IoU</td>{cell('reprojection.iou', '{:.2f}', lambda v: v >= t['reprojection.iou'][1])}</tr>",
+            f"<tr><td>생성 시간</td><td>{m.get('run.seconds', '-')}{'초' if m.get('run.seconds') is not None else ''}</td></tr>",
+            f"<tr><td>콘솔 오류</td>{cell('viewer.console_errors', '{:.0f}', lambda v: v == 0)}</tr>",
+        ])
+        err = f'<div class="cap bad">{r["error"]}</div>' if r.get("error") else ""
+        rows.append(
+            f'<div class="row">{_img_tag(eval_dir / r["fixture"] / "input.png", "입력 이미지 (정답 장면 렌더링)")}'
+            f'{_img_tag(eval_dir / r["fixture"] / "viewer.png", "앱 뷰어 (같은 시점)")}'
+            f'<div class="meta"><b>{r["fixture"]}</b> · {r["status"]}<br>충실도 <b>{r["fidelity"]:.1f}</b>'
+            f'<table>{table}</table>{err}</div></div>')
+    return (f'<!doctype html><html><head><meta charset="utf-8"><style>{SHEET_CSS}</style></head><body>'
+            f'<div class="wrap"><h1>{title}</h1><div class="sub">{" · ".join(sub)}</div>{"".join(rows)}</div>'
+            "</body></html>")
 
 
 def run_eval(app: AppHandle, fixtures: list[Fixture], out_dir: Path, lab: Lab,
@@ -1029,6 +1107,10 @@ def run_eval(app: AppHandle, fixtures: list[Fixture], out_dir: Path, lab: Lab,
     summary = summarize(results)
     summary["smoke"] = {"passed": not smoke, "violations": smoke}
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+    try:  # 사람이 한눈에 볼 수 있는 평가 시트. 실패해도 평가 결과에는 영향이 없다
+        lab.screenshot_html(eval_sheet_html(summary, out_dir, out_dir.name), out_dir / "sheet.png")
+    except Exception as e:
+        print(f"  평가 시트를 만들지 못했다: {e}")
     return summary
 
 
@@ -1074,7 +1156,8 @@ def cmd_eval(args: argparse.Namespace) -> int:
         print(f"{app_dir}/app.py가 없다")
         return 1
     out = new_eval_dir(args.label or app_dir.name)
-    fixtures = make_fixtures(args.suite)
+    seeds = [int(s) for s in args.holdout_seeds.split(",")] if args.holdout_seeds else None
+    fixtures = make_fixtures(args.suite, seeds)
     app = start_product_app(app_dir, out / "data", out / "app.log")
     lab = Lab()
     try:
@@ -1132,6 +1215,404 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
         indent=2, ensure_ascii=False))
     print(f"\n결과: {out.relative_to(ROOT)}/calibration.json")
     return 0 if all(ok for _, ok, _ in checks) else 1
+
+
+# ===========================================================================
+# 2단계: 단일 실행기
+#
+# 작업 명세 하나를 받아 worktree를 만들고, Claude Code에게 구현을 맡기고, 평가한다.
+# eval을 통과하면 main에 병합하고 배포한다. 통과하지 못하면 실패 증거를 넘겨 다시 시도하고,
+# 시도를 다 쓰면 병합하지 않고 사람에게 넘긴다.
+# ===========================================================================
+
+MAX_ATTEMPTS = 3
+CLAUDE_BUDGET_PER_ATTEMPT_USD = 5
+CLAUDE_TIMEOUT_S = 60 * 60
+REGRESSION_TOLERANCE = 2.0              # 홀드아웃 회귀 허용폭 (2단계 실측 후 조정)
+PROD_PORT = int(os.environ.get("FACTORY_PROD_PORT", "8000"))
+WORKTREES = VAR / "worktrees"
+RUNS = VAR / "runs"
+
+# 하네스 v1: 구현 에이전트에게 주는 지시문. 5단계에서 harness/로 옮긴다.
+IMPLEMENT_SYSTEM = """\
+너는 tiny-software-factory의 구현 에이전트다. 현재 폴더는 제품 저장소의 작업 공간(git worktree)이다.
+
+규칙
+- 작업 명세는 .factory/work-item.yaml, 앱 계약은 .factory/CONTRACT.md에 있다. 계약은 반드시 지킨다.
+- .factory/feedback.json이 있으면 이전 시도가 eval을 통과하지 못한 것이다. 실패 항목과 증거부터 읽는다.
+- .factory/ 아래 파일은 읽기만 한다. 고치거나 지우지 않는다.
+- git 커밋은 하지 않는다. 팩토리가 시도마다 커밋한다.
+- 제품은 단일 파일 app.py로 유지한다. 의존성은 파일 머리의 PEP 723 인라인 메타데이터로 선언하고,
+  `uv run app.py --port <port> --data-dir <dir>`로 실행되게 한다.
+- 3D 장면 생성은 app.py가 Codex를 헤드리스로 호출해서 한다 (`codex exec`, 이미지는 `-i`).
+  평가기가 CODEX_HOME, AWS_PROFILE 등 환경 변수를 넘기므로 os.environ을 그대로 자식 프로세스에 넘긴다.
+  CODEX_HOME의 설정 파일은 고치지 않는다.
+- three.js는 .factory/vendor/의 사본(three.module.js, three.core.js)을 저장소에 복사해 쓴다. 외부 CDN은 막혀 있다.
+- 평가기는 정답이 공개된 공개 세트(.factory/fixtures/) 외에, 매번 새로 뽑는 비공개 홀드아웃 장면
+  (그림자, 질감·이미지 노이즈 포함)으로도 채점한다. 공개 세트의 정답을 코드에 넣지 않는다.
+
+검증
+- 공개 세트로 공식 평가를 직접 돌릴 수 있다: {self_eval}
+  이 명령은 Codex를 장면마다 한 번(공개 세트 4회) 호출하므로 시간과 비용이 든다. 필요할 때만 쓴다.
+- 끝내기 전에 앱이 계약대로 뜨고 요청 하나가 done까지 가는지 확인한다.
+
+마지막으로 .factory/attempt-notes.md에 이번 시도에서 바꾼 것, 확인한 것, 남은 문제의 원인 추정을 짧게 적는다.
+"""
+
+IMPLEMENT_TASK = """\
+작업 명세 {work_item_id}를 구현하라.
+
+{work_item_yaml}
+수용 조건(acceptance)을 모두 만족해야 eval을 통과한다. 이번은 {attempt}/{max_attempts}번째 시도다.
+{feedback_hint}"""
+
+
+def load_work_item(path: Path) -> dict:
+    import yaml
+    item = yaml.safe_load(path.read_text())
+    for key in ("work_item", "goal", "acceptance"):
+        if key not in item:
+            raise RuntimeError(f"작업 명세에 {key}가 없다: {path}")
+    return item
+
+
+def git(*args: str, cwd: Path, check: bool = True, identity: bool = False) -> str:
+    env = {**os.environ, **FACTORY_GIT_IDENTITY} if identity else None
+    out = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True)
+    if check and out.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} 실패: {out.stderr.strip()}")
+    return out.stdout.strip()
+
+
+def prepare_worktree(work_id: str) -> tuple[Path, str]:
+    """이슈별 브랜치와 worktree. 이미 있으면 이어서 쓴다."""
+    branch = f"factory/{work_id}"
+    path = WORKTREES / work_id
+    exclude = PRODUCT / ".git" / "info" / "exclude"
+    if ".factory/" not in (exclude.read_text() if exclude.exists() else ""):
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with open(exclude, "a") as f:
+            f.write("\n.factory/\n")
+    if path.exists():
+        return path, branch
+    WORKTREES.mkdir(parents=True, exist_ok=True)
+    exists = git("branch", "--list", branch, cwd=PRODUCT)
+    git("worktree", "add", str(path), *([branch] if exists else ["-b", branch, "main"]), cwd=PRODUCT)
+    return path, branch
+
+
+def write_context(wt: Path, item: dict, lab: Lab) -> None:
+    """작업 공간의 .factory/: 작업 명세, 계약, 공개 세트(이미지와 정답), three.js 사본."""
+    import yaml
+    ctx = wt / ".factory"
+    (ctx / "fixtures").mkdir(parents=True, exist_ok=True)
+    (ctx / "vendor").mkdir(exist_ok=True)
+    (ctx / "work-item.yaml").write_text(yaml.safe_dump(item, allow_unicode=True, sort_keys=False))
+    shutil.copy(ROOT / "CONTRACT.md", ctx / "CONTRACT.md")
+    for f in ("three.module.js", "three.core.js", "LICENSE"):
+        shutil.copy(VENDOR / f, ctx / "vendor" / f)
+    for fx in make_fixtures("public"):
+        d = ctx / "fixtures" / fx.id
+        if (d / "input.png").exists():
+            continue
+        lab.render(fx)
+        d.mkdir(exist_ok=True)
+        (d / "input.png").write_bytes(fx.png)
+        (d / "gt.json").write_text(json.dumps(fx.spec, indent=2))
+
+
+def run_claude(wt: Path, prompt: str, system: str, log_path: Path) -> dict:
+    """Claude Code를 비대화식으로 실행한다. Bedrock default profile, 모델 지정 없음, 개인 설정 없음."""
+    cmd = ["claude", "-p", prompt, "--bare", "--append-system-prompt", system,
+           "--output-format", "stream-json", "--verbose",
+           "--dangerously-skip-permissions", "--max-budget-usd", str(CLAUDE_BUDGET_PER_ATTEMPT_USD)]
+    started = time.time()
+    with open(log_path, "w") as log:
+        try:
+            proc = subprocess.run(cmd, cwd=wt, env=agent_env(), stdout=log, stderr=subprocess.STDOUT,
+                                  timeout=CLAUDE_TIMEOUT_S)
+            code = proc.returncode
+        except subprocess.TimeoutExpired:
+            code = "timeout"
+    events = []
+    for line in log_path.read_text(errors="replace").splitlines():
+        if line.startswith("{"):
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                pass
+    init = next((e for e in events if e.get("type") == "system" and e.get("subtype") == "init"), {})
+    result = next((e for e in reversed(events) if e.get("type") == "result"), {})
+    tool_calls = sum(1 for e in events if e.get("type") == "assistant"
+                     for c in e.get("message", {}).get("content", []) if c.get("type") == "tool_use")
+    return {"exit": code, "model": init.get("model"), "cost_usd": result.get("total_cost_usd"),
+            "turns": result.get("num_turns"), "tool_calls": tool_calls,
+            "seconds": round(time.time() - started), "subtype": result.get("subtype"),
+            "is_error": result.get("is_error"), "summary": str(result.get("result", ""))[-1500:]}
+
+
+def _check(op: str, actual: float | None, threshold: float) -> bool:
+    if actual is None:
+        return False
+    return actual <= threshold if op == "<=" else actual >= threshold
+
+
+def _parse_threshold(expr: str) -> tuple[str, float]:
+    expr = str(expr).strip()
+    op = expr[:2]
+    if op not in ("<=", ">="):
+        raise RuntimeError(f"목표값은 '<= 숫자' 또는 '>= 숫자' 형식이어야 한다: {expr}")
+    return op, float(expr[2:])
+
+
+def judge(item: dict, candidate: dict | None, baseline: dict | None, start_error: str | None) -> dict:
+    """작업 명세의 수용 조건을 하나씩 판정한다. 모두 통과해야 eval 통과다."""
+    conditions, failures = [], []
+
+    def cond(name: str, ok: bool, detail: str):
+        conditions.append({"name": name, "ok": ok, "detail": detail})
+
+    for raw in item["acceptance"]:
+        if raw == "run":
+            cond("run", start_error is None, start_error or "app.py가 계약대로 시작됐다")
+        elif raw == "contract-smoke":
+            if candidate is None:
+                cond("contract-smoke", False, "앱이 시작되지 않아 검사하지 못했다")
+            else:
+                v = candidate["smoke"]["violations"]
+                cond("contract-smoke", not v, "계약 위반 없음" if not v else
+                     "; ".join(f"{k}: {c[0]}" for k, c in v.items()))
+        elif raw == "holdout-regression":
+            if baseline is None:
+                cond("holdout-regression", True, "비교할 main이 없어 생략했다")
+            elif candidate is None or "holdout" not in candidate:
+                cond("holdout-regression", False, "후보의 홀드아웃 점수가 없다")
+            else:
+                c, b = candidate["holdout"]["fidelity"], baseline["holdout"]["fidelity"]
+                cond("holdout-regression", c >= b - REGRESSION_TOLERANCE,
+                     f"후보 {c:.1f} / main {b:.1f} (같은 시드, 허용폭 {REGRESSION_TOLERANCE})")
+        elif isinstance(raw, dict) and "suite" in raw:
+            suite = raw["suite"]
+            block = (candidate or {}).get(suite if suite in ("public", "holdout") else "overall")
+            for metric, expr in raw.get("metrics", {}).items():
+                op, threshold = _parse_threshold(expr)
+                actual = block["metrics"].get(metric) if block else None
+                ok = _check(op, actual, threshold)
+                cond(f"{suite}:{metric}", ok, f"{actual} (목표 {op} {threshold})")
+                if not ok and candidate:
+                    worst = sorted(
+                        (r for r in candidate["fixtures"] if suite in ("all", "overall") or r["variant"] == suite),
+                        key=lambda r: r["metrics"].get(metric, 0), reverse=(op == "<="))[:3]
+                    failures.append({"metric": metric, "suite": suite, "expected": f"{op} {threshold}",
+                                     "actual": actual,
+                                     "worst_fixtures": [{"fixture": r["fixture"], "seed": r["seed"],
+                                                         "value": r["metrics"].get(metric),
+                                                         "status": r["status"], "error": r["error"]}
+                                                        for r in worst]})
+        else:
+            raise RuntimeError(f"알 수 없는 수용 조건: {raw}")
+    return {"passed": all(c["ok"] for c in conditions), "conditions": conditions, "failures": failures}
+
+
+def write_feedback(wt: Path, attempt: int, verdict: dict, candidate: dict | None,
+                   baseline: dict | None, eval_dir: Path, app_log: Path | None) -> None:
+    """실패 증거를 다음 시도의 .factory/feedback.json으로 넘긴다. 공개 세트만 이미지를 함께 준다."""
+    ctx = wt / ".factory"
+    fb_dir = ctx / "feedback"
+    shutil.rmtree(fb_dir, ignore_errors=True)
+    fb_dir.mkdir(parents=True)
+    for f in verdict["failures"]:
+        for w in f["worst_fixtures"]:
+            src = eval_dir / w["fixture"] / "viewer.png"
+            if w["fixture"].startswith("public") and src.exists():
+                shutil.copy(src, fb_dir / f"{w['fixture']}-viewer.png")
+                w["evidence"] = [f".factory/fixtures/{w['fixture']}/input.png",
+                                 f".factory/feedback/{w['fixture']}-viewer.png"]
+    feedback = {
+        "attempt": attempt, "verdict": "failed",
+        "conditions": verdict["conditions"], "failures": verdict["failures"],
+        "score": {"public": (candidate or {}).get("public", {}).get("fidelity"),
+                  "holdout": (candidate or {}).get("holdout", {}).get("fidelity"),
+                  "main_same_seeds": (baseline or {}).get("holdout", {}).get("fidelity")},
+        "smoke_violations": (candidate or {}).get("smoke", {}).get("violations", {}),
+    }
+    if app_log and app_log.exists():
+        tail = app_log.read_text(errors="replace")[-4000:]
+        (fb_dir / "app.log.tail").write_text(tail)
+        feedback["app_log"] = ".factory/feedback/app.log.tail"
+    notes = ctx / "attempt-notes.md"
+    if notes.exists():
+        feedback["previous_notes"] = notes.read_text()[-3000:]
+    (ctx / "feedback.json").write_text(json.dumps(feedback, indent=2, ensure_ascii=False))
+
+
+def evaluate_candidate(wt: Path, eval_dir: Path, lab: Lab) -> tuple[dict | None, dict | None, str | None]:
+    """후보와 현재 main을 같은 홀드아웃 시드로 평가한다. (후보 요약, main 요약, 시작 오류)"""
+    fixtures = make_fixtures("all")
+    holdout = [fx for fx in fixtures if fx.variant == "holdout"]
+    candidate = baseline = None
+    start_error = None
+    try:
+        app = start_product_app(wt, eval_dir / "candidate" / "data", eval_dir / "candidate-app.log")
+    except RuntimeError as e:
+        start_error = str(e)
+    else:
+        try:
+            candidate = run_eval(app, fixtures, eval_dir / "candidate", lab)
+        finally:
+            app.stop()
+    if (PRODUCT / "app.py").exists() and candidate is not None:
+        try:
+            main_app = start_product_app(PRODUCT, eval_dir / "main" / "data", eval_dir / "main-app.log")
+        except RuntimeError as e:
+            print(f"  main을 띄우지 못해 회귀 비교를 생략한다: {e}")
+        else:
+            try:
+                baseline = run_eval(main_app, holdout, eval_dir / "main", lab)
+            finally:
+                main_app.stop()
+    return candidate, baseline, start_error
+
+
+def commit_attempt(wt: Path, message: str) -> str | None:
+    git("add", "-A", cwd=wt)
+    if not git("status", "--porcelain", cwd=wt):
+        return None
+    git("commit", "-q", "-m", message, cwd=wt, identity=True)
+    return git("rev-parse", "--short", "HEAD", cwd=wt)
+
+
+def merge_and_deploy(item: dict, wt: Path, branch: str, best_commit: str) -> dict:
+    """eval을 통과한 시도를 main에 squash 병합하고, main을 로컬 서버로 다시 띄운다."""
+    git("checkout", "-q", branch, cwd=wt)
+    git("reset", "-q", "--hard", best_commit, cwd=wt)
+    previous = git("rev-parse", "--short", "main", cwd=PRODUCT)
+    git("merge", "-q", "--squash", branch, cwd=PRODUCT)
+    goal = " ".join(str(item["goal"]).split())[:72]
+    git("commit", "-q", "-m", f"{item['work_item']}: {goal}\n\neval 통과 (factory run, 후보 {best_commit})",
+        cwd=PRODUCT, identity=True)
+    merged = git("rev-parse", "--short", "HEAD", cwd=PRODUCT)
+    try:
+        deploy()
+    except RuntimeError as e:  # 배포가 실패하면 main을 되돌린다
+        git("reset", "-q", "--hard", previous, cwd=PRODUCT)
+        deploy(allow_missing=True)
+        return {"merged": None, "deployed": False, "error": str(e), "previous": previous}
+    git("worktree", "remove", "--force", str(wt), cwd=PRODUCT)
+    return {"merged": merged, "deployed": True, "previous": previous, "url": f"http://127.0.0.1:{PROD_PORT}"}
+
+
+def deploy(allow_missing: bool = False) -> None:
+    """product/ main의 app.py를 PROD_PORT에서 다시 띄운다. 이 서버가 이 실험의 프로덕션이다."""
+    pid_file = VAR / "prod.pid"
+    if pid_file.exists():
+        try:
+            os.killpg(int(pid_file.read_text()), signal.SIGTERM)
+            time.sleep(1)
+        except (ProcessLookupError, ValueError, PermissionError):
+            pass
+        pid_file.unlink()
+    if not (PRODUCT / "app.py").exists():
+        if allow_missing:
+            return
+        raise RuntimeError("product/app.py가 없다")
+    log = open(VAR / "prod.log", "a")
+    proc = subprocess.Popen(
+        ["uv", "run", "app.py", "--port", str(PROD_PORT), "--data-dir", str(VAR / "prod-data")],
+        cwd=PRODUCT, env=agent_env(CODEX_HOME=str(CODEX_HOME)),
+        stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+    )
+    pid_file.write_text(str(proc.pid))
+    deadline = time.time() + 180
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"배포한 app.py가 종료됐다 (exit {proc.returncode}, var/prod.log)")
+        with socket.socket() as s:
+            if s.connect_ex(("127.0.0.1", PROD_PORT)) == 0:
+                code, _ = _http("GET", f"http://127.0.0.1:{PROD_PORT}/api/requests/not-a-key")
+                if code in (200, 404):
+                    return
+        time.sleep(0.5)
+    raise RuntimeError(f"배포한 app.py가 {PROD_PORT} 포트에서 응답하지 않는다")
+
+
+def run_work_item(item: dict, lab: Lab, log: Callable[[str], None] = print) -> dict:
+    """작업 명세 하나를 끝까지 실행한다. 결과는 var/runs/<실행 ID>/run.json에 남는다."""
+    import yaml
+    work_id = str(item["work_item"])
+    run_id = f"{work_id}-{datetime.now():%Y%m%d-%H%M%S}"
+    run_dir = RUNS / run_id
+    run_dir.mkdir(parents=True)
+    wt, branch = prepare_worktree(work_id)
+    write_context(wt, item, lab)
+    self_eval = f"uv run {ROOT / 'factory.py'} eval --app . --suite public --label self-{work_id}"
+    system = IMPLEMENT_SYSTEM.format(self_eval=self_eval)
+    record = {"run_id": run_id, "work_item": work_id, "branch": branch, "worktree": str(wt),
+              "harness": "v1", "attempts": [], "status": "running", "started": datetime.now().isoformat()}
+
+    def save():
+        (run_dir / "run.json").write_text(json.dumps(record, indent=2, ensure_ascii=False))
+
+    best = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        feedback = wt / ".factory" / "feedback.json"
+        hint = ("이전 시도가 eval을 통과하지 못했다. .factory/feedback.json과 .factory/feedback/을 먼저 읽어라."
+                if feedback.exists() else "첫 시도다.")
+        prompt = IMPLEMENT_TASK.format(
+            work_item_id=work_id, work_item_yaml=yaml.safe_dump(item, allow_unicode=True, sort_keys=False),
+            attempt=attempt, max_attempts=MAX_ATTEMPTS, feedback_hint=hint)
+        log(f"[{work_id}] 시도 {attempt}/{MAX_ATTEMPTS}: Claude Code 실행")
+        claude = run_claude(wt, prompt, system, run_dir / f"attempt-{attempt}.jsonl")
+        log(f"[{work_id}]   Claude Code 끝: {claude['seconds']}초, ${claude['cost_usd'] or 0:.2f}, "
+            f"도구 호출 {claude['tool_calls']}회, model={claude['model']}")
+        commit = commit_attempt(wt, f"{work_id} attempt {attempt}")
+        eval_dir = run_dir / f"attempt-{attempt}-eval"
+        log(f"[{work_id}]   평가 시작 (커밋 {commit})")
+        candidate, baseline, start_error = evaluate_candidate(wt, eval_dir, lab)
+        verdict = judge(item, candidate, baseline, start_error)
+        entry = {"attempt": attempt, "commit": commit, "claude": claude, "eval_dir": str(eval_dir),
+                 "verdict": verdict,
+                 "score": {"public": (candidate or {}).get("public", {}).get("fidelity"),
+                           "holdout": (candidate or {}).get("holdout", {}).get("fidelity"),
+                           "main_same_seeds": (baseline or {}).get("holdout", {}).get("fidelity")},
+                 "codex_calls": sum(len(s["fixtures"]) for s in (candidate, baseline) if s),
+                 "generation_seconds": [r["seconds"] for s in (candidate, baseline) if s
+                                        for r in s["fixtures"] if r.get("seconds") is not None]}
+        record["attempts"].append(entry)
+        save()
+        for c in verdict["conditions"]:
+            log(f"[{work_id}]   {'통과' if c['ok'] else '실패'}  {c['name']}: {c['detail']}")
+        if commit and (best is None or (entry["score"]["public"] or 0) > (best["score"]["public"] or 0)):
+            best = entry
+        if verdict["passed"]:
+            log(f"[{work_id}]   eval 통과 → 병합과 배포")
+            record["delivery"] = merge_and_deploy(item, wt, branch, commit or git("rev-parse", "--short", "HEAD", cwd=wt))
+            record["status"] = "done" if record["delivery"]["deployed"] else "needs_human"
+            break
+        write_feedback(wt, attempt, verdict, candidate, baseline, eval_dir,
+                       eval_dir / "candidate-app.log")
+    else:
+        record["status"] = "needs_human"
+        record["best_attempt"] = best["attempt"] if best else None
+        if best and best["commit"]:  # 최고점 시도를 브랜치 끝에 남겨 사람이 볼 수 있게 한다
+            git("reset", "-q", "--hard", best["commit"], cwd=wt)
+    record["finished"] = datetime.now().isoformat()
+    record["cost_usd"] = round(sum(a["claude"]["cost_usd"] or 0 for a in record["attempts"]), 4)
+    record["codex_calls"] = sum(a["codex_calls"] for a in record["attempts"])
+    save()
+    log(f"[{work_id}] 결과: {record['status']} (Claude Code ${record['cost_usd']:.2f}, "
+        f"Codex 호출 {record['codex_calls']}회) → {run_dir.relative_to(ROOT)}/run.json")
+    return record
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    item = load_work_item(Path(args.work_item))
+    lab = Lab()
+    try:
+        record = run_work_item(item, lab)
+    finally:
+        lab.close()
+    return 0 if record["status"] == "done" else 1
 
 
 # ---------------------------------------------------------------------------
@@ -1328,11 +1809,14 @@ def main() -> int:
     p.add_argument("--app", default=str(PRODUCT), help="app.py가 있는 폴더 (기본 product/)")
     p.add_argument("--suite", choices=["public", "holdout", "all"], default="all")
     p.add_argument("--label", help="결과 폴더 이름에 붙일 라벨")
+    p.add_argument("--holdout-seeds", help="홀드아웃 시드를 고정한다 (쉼표 구분, 점수 흔들림 측정용)")
     sub.add_parser("calibrate", help="기준 앱(정답·빈 장면·오차 주입)으로 채점기를 검증한다")
+    p = sub.add_parser("run", help="로컬 작업 명세 하나를 구현·평가·병합까지 실행한다")
+    p.add_argument("work_item", help="작업 명세 YAML 경로 (예: work/LOCAL-1.yaml)")
 
     args = parser.parse_args()
     handlers = {"init": cmd_init, "doctor": cmd_doctor, "linear-setup": cmd_linear_setup,
-                "eval": cmd_eval, "calibrate": cmd_calibrate}
+                "eval": cmd_eval, "calibrate": cmd_calibrate, "run": cmd_run}
     return handlers[args.command](args)
 
 

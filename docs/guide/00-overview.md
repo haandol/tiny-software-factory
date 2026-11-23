@@ -47,19 +47,22 @@ flowchart LR
 
 ## 읽는 순서
 
-각 문서는 같은 틀을 따른다: 이 단계가 푸는 문제, 적용한 원칙, 만든 것, 실행해 보기, 실제 실행 기록, 내 프로젝트에 적용하기, 단순화한 것과 함정. 해당 단계의 코드는 git 태그로 체크아웃할 수 있다.
+각 문서는 같은 틀을 따른다: 이 단계가 푸는 문제, 적용한 원칙, 만든 것, 실행해 보기, 실제 실행 기록, 내 프로젝트에 적용하기, 단순화한 것과 함정. 해당 단계의 코드는 git 태그로 체크아웃할 수 있다. 3단계(리팩터링)는 실행 계획에 없던 단계로, 2단계에서 팩토리 코드와 제품 코드가 모두 한 파일로 커진 것을 보고 추가했다.
 
 | 문서 | 다루는 내용 | git 태그 |
 |---|---|---|
 | 00-overview.md (이 문서) | 전체 구조와 0단계 준비 | `step-0-foundation` |
 | 01-eval-first.md | Oracle을 만들고 채점기를 검증하는 법 | `step-1-eval` |
 | 02-autonomous-worker.md | 에이전트 하나가 eval을 통과할 때까지 혼자 수렴하게 만드는 법 | `step-2-worker` |
-| 03-pipeline.md | 이슈 트래커를 제어판으로 쓰고 실패를 사람에게 넘기는 법 | `step-3-pipeline` |
-| 04-discovery.md | 점수 차이를 단계적 목표의 다음 요구사항으로 바꾸는 법 | `step-4-discovery` |
-| 05-learning.md | 실행 기록으로 하네스를 고치고 검증하는 법 | `step-5-learning` |
-| 06-apply-to-your-project.md | 현재 프로젝트에 옮기는 순서와 점검표 | `step-6-demo` |
+| 03-refactor.md | 커진 코드를 모듈로 나누고, 리팩터링을 생산 루프의 단계로 넣는 법 | `step-3-refactor` |
+| 04-pipeline.md | 이슈 트래커를 제어판으로 쓰고 실패를 사람에게 넘기는 법 | `step-4-pipeline` |
+| 05-discovery.md | 점수 차이를 단계적 목표의 다음 요구사항으로 바꾸는 법 | `step-5-discovery` |
+| 06-learning.md | 실행 기록으로 하네스를 고치고 검증하는 법 | `step-6-learning` |
+| 07-apply-to-your-project.md | 현재 프로젝트에 옮기는 순서와 점검표 | `step-7-demo` |
 
 계획의 근거와 결정 과정은 [reports/execution-plan/report.md](../../reports/execution-plan/report.md)에 있다.
+
+문서의 이미지는 실제 실행 결과에서 만든다. 평가 시트(`sheet.png`)는 팩토리가 평가할 때마다 스스로 남기고, 나머지 그림은 [docs/capture.py](../capture.py)로 만든다. 터미널 그림은 실제 출력 텍스트를 그대로 그린 것이고, Linear 그림은 Linear API로 읽은 데이터를 그린 것이다.
 
 ---
 
@@ -106,6 +109,20 @@ uv run factory.py doctor
 ```
 
 ### 실제 실행 기록 (2026-11-23, EC2 arm64)
+
+`linear-setup`이 팀 SWF에 라벨 3개와 `Needs Human` 상태를 만들고, 시험 이슈로 읽기·쓰기를 확인했다.
+
+![linear-setup 실행 결과](images/00/linear-setup.png)
+
+준비가 끝난 Linear 팀의 상태와 라벨이다. 아직 이슈는 없다. 이 그림은 Linear API로 읽은 실제 데이터를 그린 것이고, Linear 화면의 스크린샷은 아니다.
+
+![Linear 팀 SWF의 상태와 라벨](images/00/linear-team.png)
+
+`doctor`는 이후 단계가 쓰는 모든 것을 실제로 한 번씩 호출한다. 일곱 항목이 모두 통과했다.
+
+![doctor 실행 결과](images/00/doctor.png)
+
+같은 출력의 텍스트:
 
 `linear-setup`:
 

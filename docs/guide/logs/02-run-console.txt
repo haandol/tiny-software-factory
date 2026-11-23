@@ -1,0 +1,13 @@
+시작 14:10:13
+[LOCAL-1] 시도 1/3: Claude Code 실행
+[LOCAL-1]   Claude Code 끝: 1414초, $5.00, 도구 호출 63회, model=us.anthropic.claude-opus-5-5
+[LOCAL-1]   평가 시작 (커밋 715556e)
+[LOCAL-1]   통과  run: app.py가 계약대로 시작됐다
+[LOCAL-1]   통과  contract-smoke: 계약 위반 없음
+[LOCAL-1]   통과  public:camera.fov_error_deg: 0.5819 (목표 <= 15.0)
+[LOCAL-1]   통과  public:objects.f1: 1.0 (목표 >= 0.3)
+[LOCAL-1]   통과  holdout-regression: 비교할 main이 없어 생략했다
+[LOCAL-1]   eval 통과 → 병합과 배포
+[LOCAL-1] 결과: done (Claude Code $5.00, Codex 호출 8회) → var/runs/LOCAL-1-20261123-141014/run.json
+exit=0
+끝 14:34:17

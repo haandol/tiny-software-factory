@@ -15,6 +15,7 @@ uv run factory.py init           # 로컬 준비 (codex-home, three.js, 제품 �
 uv run factory.py linear-setup   # Linear 라벨·Needs Human 상태 준비
 uv run factory.py doctor         # 환경 점검 (Claude Code·Codex를 한 번씩 호출)
 uv run factory.py calibrate      # 채점기 검증 (기준 앱 세 종류, 모델 호출 없음)
+uv run factory.py run work/LOCAL-1.yaml   # 작업 명세 하나를 구현·평가·병합·배포 (http://127.0.0.1:8000)
 ```
 
 필요한 도구: Python 3.13, uv, git, Claude Code, Codex, AWS CLI(Bedrock default profile).
@@ -25,8 +26,9 @@ uv run factory.py calibrate      # 채점기 검증 (기준 앱 세 종류, 모�
 |---|---|---|
 | 0. 준비 | 완료 | `step-0-foundation` |
 | 1. 평가 먼저 | 완료 | `step-1-eval` |
-| 2. 단일 실행기 | 예정 | `step-2-worker` |
-| 3. Linear 연결 | 예정 | `step-3-pipeline` |
-| 4. 발견 루프 | 예정 | `step-4-discovery` |
-| 5. 학습 루프 | 예정 | `step-5-learning` |
-| 6. 정리 | 예정 | `step-6-demo` |
+| 2. 단일 실행기 | 완료 | `step-2-worker` |
+| 3. 모듈화와 리팩터링 단계 | 진행 중 | `step-3-refactor` |
+| 4. Linear 연결 | 예정 | `step-4-pipeline` |
+| 5. 발견 루프 | 예정 | `step-5-discovery` |
+| 6. 학습 루프 | 예정 | `step-6-learning` |
+| 7. 정리 | 예정 | `step-7-demo` |

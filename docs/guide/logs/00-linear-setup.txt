@@ -1,0 +1,5 @@
+생성  라벨 factory
+생성  라벨 factory-eval
+생성  라벨 auto-discovered
+생성  상태 Needs Human (type=started)
+시험  이슈 SWF-1 생성 → 댓글 → 삭제 성공

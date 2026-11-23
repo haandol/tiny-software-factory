@@ -3,6 +3,7 @@
   1. 제품 main 커밋이나 평가 자산 커밋이 바뀔 때마다 한 번, 새 홀드아웃 시드로 main을 평가한다
   2. FINAL_TARGETS에 못 미친 지표를 찾는다 (지표 하나당 이슈 하나)
   3. 다음 목표는 현재값과 최종 목표의 중간이다. 최종 목표를 한 번에 요구하면 통과하지 못하고 사람에게 넘어가기 때문이다
+     목표와의 차이가 그 지표의 측정 잡음(평가 정책의 METRIC_NOISE)보다 작으면 이슈를 만들지 않는다 (SWF-10의 교훈)
   4. 같은 지표의 이슈가 열려 있으면 만들지 않는다. 한 번에 최대 2개, 열린 자동 이슈는 최대 3개
   5. 모든 지표가 최종 목표에 닿으면 이슈를 만들지 않는다
 이슈의 '관찰'은 발견 에이전트가 장면별 수치를 보고 쓴다. 판단과 이슈 생성 규칙은 프로그램이 정한다.
@@ -39,26 +40,46 @@ def marker(suite: str, metric: str) -> str:
     return f"지표 키: `{suite}:{metric}`"
 
 
-def staged_target(op: str, final: float, actual: float) -> float:
-    """현재값과 최종 목표의 중간. 차이가 작으면 최종 목표 그대로."""
-    nxt = actual + (final - actual) / 2
+def metric_noise() -> dict[str, float]:
+    """평가 정책에 기록된 지표별 측정 잡음 (SWF-11). 없으면 0으로 본다."""
+    from .oracle import policy
+    return dict(getattr(policy, "METRIC_NOISE", {}))
+
+
+def staged_target(op: str, final: float, actual: float, noise: float = 0.0) -> float:
+    """다음 목표: 현재값과 최종 목표의 중간. 한 단계의 폭은 측정 잡음보다 작지 않게 하고, 최종 목표를 넘지 않는다."""
+    step = max(abs(final - actual) / 2, noise)
+    nxt = actual - step if op == "<=" else actual + step
+    nxt = max(nxt, final) if op == "<=" else min(nxt, final)
     if abs(nxt - final) < max(abs(final) * 0.1, 0.05):
         nxt = final
-    digits = 2 if abs(final) < 1 else 1
-    return round(nxt, digits) if op == ">=" else round(nxt, digits)
+    return round(nxt, 2 if abs(final) < 1 else 1)
 
 
-def gaps(summary: dict) -> list[dict]:
-    """최종 목표에 못 미친 지표. 두 세트에서 모두 못 미치면 홀드아웃(더 어려운 쪽)으로 하나만 낸다."""
-    found = {}
+def gaps(summary: dict, noise: dict[str, float] | None = None) -> tuple[list[dict], list[dict]]:
+    """(최종 목표 미달 지표, 잡음 안이라 건너뛴 지표). 두 세트에서 모두 못 미치면 홀드아웃으로 하나만 낸다.
+
+    목표와의 차이가 측정 잡음보다 작으면 이슈를 만들지 않는다. 잡음보다 작은 차이는 개선이 아니라 운을 쫓게 된다.
+    """
+    noise = metric_noise() if noise is None else noise
+    found, within = {}, {}
     for suite in ("public", "holdout"):
         metrics = summary.get(suite, {}).get("metrics", {})
         for key, (op, final) in FINAL_TARGETS.items():
-            if key in metrics and metrics[key] is not None and not meets(op, metrics[key], final):
-                found[key] = {"suite": suite, "metric": key, "op": op, "final": final, "actual": metrics[key],
-                              "next": staged_target(op, final, metrics[key])}
+            value = metrics.get(key)
+            if value is None or meets(op, value, final):
+                continue
+            gap = {"suite": suite, "metric": key, "op": op, "final": final, "actual": value,
+                   "noise": noise.get(key, 0.0)}
+            if abs(value - final) <= gap["noise"]:
+                within[key] = gap
+                found.pop(key, None)
+            else:
+                found[key] = gap | {"next": staged_target(op, final, value, gap["noise"])}
+                within.pop(key, None)
     order = list(FINAL_TARGETS)
-    return sorted(found.values(), key=lambda g: order.index(g["metric"]))
+    return (sorted(found.values(), key=lambda g: order.index(g["metric"])),
+            sorted(within.values(), key=lambda g: order.index(g["metric"])))
 
 
 def worst_fixtures(summary: dict, gap: dict, n: int = 3) -> list[dict]:
@@ -108,6 +129,7 @@ def issue_body(gap: dict, summary: dict, commit: str, eval_dir, seen: dict) -> s
 ## 원하는 결과
 - {suite} {label}(`{gap['metric']}`) 평균 {gap['next']:g} {"이하" if gap['op'] == "<=" else "이상"}
 - 이번 목표는 현재값과 최종 목표({gap['final']:g}) 사이의 중간 단계다. 최종 목표는 다음 이슈에서 이어서 다룬다.
+- 이 지표의 측정 잡음은 {gap['noise']:g}다 (평가 정책 METRIC_NOISE). 목표와의 차이가 이보다 커서 이슈를 만들었다.
 
 ## 제약
 - Codex는 지금처럼 codex app-server와 CODEX_HOME 설정의 모델로 부른다.
@@ -142,7 +164,10 @@ def discover(lab: Lab, force: bool = False, log=print) -> list[dict]:
         return []
     log(f"발견 루프: main {commit} 평가")
     summary, eval_dir = evaluate_main(lab, commit)
-    found = gaps(summary)
+    found, within = gaps(summary)
+    for g in within:
+        log(f"발견 루프: {g['suite']}:{g['metric']} {g['actual']:.2f}는 목표 {g['final']:g}와의 차이가 측정 잡음 "
+            f"{g['noise']:g} 안이라 건너뛴다")
     created, skipped = [], []
     for gap in found:
         if len(created) >= MAX_NEW_PER_RUN or len(open_auto) + len(created) >= MAX_OPEN_AUTO:
@@ -157,9 +182,9 @@ def discover(lab: Lab, force: bool = False, log=print) -> list[dict]:
                                     labels=["factory", "auto-discovered"])
         created.append({**issue, "gap": gap, "observe_cost_usd": seen.get("cost_usd")})
         log(f"발견 루프: {issue['identifier']} 생성 — {title}")
-    if not found:
+    if not found and not within:
         log(f"발견 루프: main {commit}은 최종 목표를 모두 충족한다. 이슈를 만들지 않는다")
     STATE_FILE.write_text(json.dumps({"commit": commit, "oracle": oracle, "eval_dir": eval_dir.name, "at": datetime.now().isoformat(),
-                                      "gaps": found, "created": [c["identifier"] for c in created],
+                                      "gaps": found, "within_noise": within, "created": [c["identifier"] for c in created],
                                       "skipped": skipped}, indent=2, ensure_ascii=False))
     return created

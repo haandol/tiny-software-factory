@@ -8,7 +8,7 @@
 이 파일 하나가 팩토리 전체다. 단계마다 명령이 하나씩 늘어난다.
 
   0단계  init, doctor, linear-setup   로컬 준비, 환경 점검, Linear 준비
-  1단계  eval, calibrate              (예정) 정답 장면 평가기와 채점기 검증
+  1단계  eval, calibrate              정답 장면 평가기와 채점기 검증
   2단계  run                          (예정) 로컬 작업 명세 하나를 끝까지 실행
   3단계  up                           (예정) Linear를 제어판으로 상주 실행
 
@@ -18,17 +18,33 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import io
+import itertools
 import json
+import math
 import os
+import random
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
+import time
 import tomllib
+import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Callable
 
 # ---------------------------------------------------------------------------
 # 경로와 상수
@@ -233,6 +249,891 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+# ===========================================================================
+# 1단계: 평가 (Oracle)
+#
+# 정답을 아는 3D 장면을 먼저 만들고, 그 장면을 렌더링한 이미지를 제품에 넣는다.
+# 제품의 뷰어가 실제로 그린 three.js 장면 그래프를 읽어 정답과 비교한다.
+# 장면 생성·렌더링·측정은 헤드리스 Chromium 안의 three.js가, 비교·채점은 Python이 한다.
+# ===========================================================================
+
+IMAGE_W, IMAGE_H = 640, 480
+PUBLIC_SEEDS = [1101, 2202, 3303, 4404]
+HOLDOUT_COUNT = 4
+REQUEST_TIMEOUT_S = 900                 # 요청 하나가 done이 될 때까지 기다리는 최대 시간
+VARIANT_OPTS = {                        # 렌더링 변형. 홀드아웃만 그림자와 노이즈를 섞는다
+    "public": {},
+    "holdout": {"shadows": True, "textureNoise": True, "imageNoise": 18},
+}
+CHROMIUM_ARGS = ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
+
+# 최종 목표. 이슈 하나의 성공 조건은 이 중 일부를 한 단계씩 끌어올린다.
+FINAL_TARGETS = {
+    "camera.fov_error_deg": ("<=", 5.0),
+    "camera.pitch_error_deg": ("<=", 3.0),
+    "camera.roll_error_deg": ("<=", 3.0),
+    "objects.f1": (">=", 0.8),
+    "objects.position_error": ("<=", 0.10),
+    "objects.size_error": ("<=", 0.20),
+    "objects.color_delta_e": ("<=", 15.0),
+    "reprojection.iou": (">=", 0.7),
+    "viewer.console_errors": ("<=", 0),
+}
+# 장면을 끝내 받지 못했을 때 쓰는 최악값
+WORST_METRICS = {
+    "camera.fov_error_deg": 90.0, "camera.pitch_error_deg": 90.0, "camera.roll_error_deg": 90.0,
+    "objects.f1": 0.0, "objects.position_error": 1.0, "objects.size_error": 1.0,
+    "objects.color_delta_e": 100.0, "reprojection.iou": 0.0,
+}
+
+PALETTE_OBJECT = ["#d1495b", "#2e86ab", "#f4a259", "#5b8e7d", "#8e6bbf", "#edae49", "#3d5a80", "#e07a5f"]
+PALETTE_FLOOR = ["#8d8478", "#a39e93", "#7a7f80", "#9c8f80"]
+PALETTE_WALL = ["#d9d4c7", "#c9ccd1", "#e3dccf", "#cfd6cf"]
+
+
+# --- 장면 생성기: 시드 하나 → 정답 장면 -----------------------------------------
+
+def _norm(v):
+    n = math.sqrt(sum(x * x for x in v)) or 1.0
+    return [x / n for x in v]
+
+
+def _dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def _cross(a, b):
+    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+
+
+def _sub(a, b):
+    return [x - y for x, y in zip(a, b)]
+
+
+def generate_scene(seed: int, variant: str) -> dict:
+    """방, 카메라, 물체 1~4개, 조명을 시드로 정한다. 같은 시드는 항상 같은 장면이 된다."""
+    rng = random.Random(seed)
+    W, D, H = rng.uniform(4, 8), rng.uniform(4, 8), rng.uniform(2.6, 3.4)
+    fov = rng.uniform(35, 75)
+    pitch = math.radians(rng.uniform(-15, 3))
+    yaw = math.radians(rng.uniform(-20, 20))
+    roll = rng.uniform(-5, 5) if variant == "holdout" else rng.uniform(-3, 3)
+    cam = [rng.uniform(-W * 0.2, W * 0.2), rng.uniform(1.0, 1.8), D / 2 - rng.uniform(0.2, 0.8)]
+    forward = [math.sin(yaw) * math.cos(pitch), math.sin(pitch), -math.cos(yaw) * math.cos(pitch)]
+    target = [cam[i] + forward[i] * 5 for i in range(3)]
+
+    right = _norm(_cross(forward, [0, 1, 0]))
+    up = _cross(right, forward)
+    tan_v = math.tan(math.radians(fov) / 2)
+    tan_h = tan_v * IMAGE_W / IMAGE_H
+
+    def visible(p):
+        v = _sub(p, cam)
+        z = _dot(v, forward)
+        if z < 1.0:
+            return False
+        return abs(_dot(v, right) / (z * tan_h)) < 0.8 and abs(_dot(v, up) / (z * tan_v)) < 0.8
+
+    objects, colors = [], rng.sample(PALETTE_OBJECT, 4)
+    for _ in range(rng.randint(1, 4)):
+        for _attempt in range(300):
+            shape = rng.choice(["box", "cylinder"])
+            if shape == "box":
+                size = [rng.uniform(0.4, 1.4), rng.uniform(0.3, 1.6), rng.uniform(0.4, 1.4)]
+            else:
+                dia = rng.uniform(0.4, 1.2)
+                size = [dia, rng.uniform(0.4, 1.6), dia]
+            radius = max(size[0], size[2]) * 0.75
+            x = rng.uniform(-W / 2 + radius, W / 2 - radius)
+            z = rng.uniform(-D / 2 + radius, cam[2] - 1.2)
+            if not (visible([x, size[1] / 2, z]) and visible([x, size[1], z])):
+                continue
+            if any(math.dist([x, z], o["position"]) < radius + o["_r"] + 0.1 for o in objects):
+                continue
+            objects.append({"shape": shape, "size": size, "position": [x, z],
+                            "yaw_deg": rng.uniform(0, 90) if shape == "box" else 0.0,
+                            "color": colors[len(objects)], "_r": radius})
+            break
+    for o in objects:
+        o.pop("_r")
+    if not objects:  # 드물게 배치에 실패하면 다음 시드로 대신한다
+        return generate_scene(seed + 7919, variant) | {"seed": seed}
+
+    light_dir = _norm([rng.uniform(-1, 1), rng.uniform(1.5, 3), rng.uniform(0.3, 1.2)])
+    lo, hi = (1.2, 3.4) if variant == "holdout" else (1.8, 2.8)
+    return {
+        "seed": seed, "variant": variant,
+        "image": {"width": IMAGE_W, "height": IMAGE_H},
+        "background": "#e9eef3",
+        "room": {"width": W, "depth": D, "height": H,
+                 "floor_color": rng.choice(PALETTE_FLOOR), "wall_color": rng.choice(PALETTE_WALL)},
+        "camera": {"fov": fov, "position": cam, "target": target, "roll_deg": roll},
+        "objects": objects,
+        "light": {"direction": light_dir, "intensity": rng.uniform(lo, hi), "ambient": rng.uniform(0.35, 0.6)},
+    }
+
+
+# --- 브라우저 쪽 코드: 장면 만들기, 장면 그래프 읽기, 측정 ---------------------------
+
+BUILDER_JS = r"""
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function buildFromSpec(THREE, spec, opts = {}) {
+  const rng = mulberry32(spec.seed >>> 0);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(spec.background);
+  const { width: W, depth: D, height: H } = spec.room;
+  const noiseTexture = () => {
+    if (!opts.textureNoise) return null;
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const g = c.getContext('2d'); const img = g.createImageData(128, 128);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = 190 + Math.floor(rng() * 65);
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v; img.data[i + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(4, 4); t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
+  const surface = (color) => new THREE.MeshStandardMaterial({ color, roughness: 0.95, metalness: 0, map: noiseTexture() });
+  const add = (mesh, role) => {
+    mesh.userData.role = role; mesh.castShadow = role === 'object'; mesh.receiveShadow = true;
+    scene.add(mesh); return mesh;
+  };
+  const ground = add(new THREE.Mesh(new THREE.PlaneGeometry(W, D), surface(spec.room.floor_color)), 'ground');
+  ground.rotation.x = -Math.PI / 2;
+  const back = add(new THREE.Mesh(new THREE.PlaneGeometry(W, H), surface(spec.room.wall_color)), 'wall');
+  back.position.set(0, H / 2, -D / 2);
+  const left = add(new THREE.Mesh(new THREE.PlaneGeometry(D, H), surface(spec.room.wall_color)), 'wall');
+  left.position.set(-W / 2, H / 2, 0); left.rotation.y = Math.PI / 2;
+  const right = add(new THREE.Mesh(new THREE.PlaneGeometry(D, H), surface(spec.room.wall_color)), 'wall');
+  right.position.set(W / 2, H / 2, 0); right.rotation.y = -Math.PI / 2;
+  for (const o of spec.objects) {
+    const geo = o.shape === 'box'
+      ? new THREE.BoxGeometry(o.size[0], o.size[1], o.size[2])
+      : new THREE.CylinderGeometry(o.size[0] / 2, o.size[0] / 2, o.size[1], 32);
+    const m = add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: o.color, roughness: 0.7 })), 'object');
+    m.position.set(o.position[0], o.size[1] / 2, o.position[1]);
+    m.rotation.y = o.yaw_deg * Math.PI / 180;
+  }
+  scene.add(new THREE.AmbientLight(0xffffff, spec.light.ambient));
+  const sun = new THREE.DirectionalLight(0xffffff, spec.light.intensity);
+  sun.position.set(...spec.light.direction.map((v) => v * 10));
+  if (opts.shadows) {
+    sun.castShadow = true; sun.shadow.mapSize.set(1024, 1024);
+    const s = sun.shadow.camera; s.left = -W; s.right = W; s.top = D; s.bottom = -D; s.far = 40;
+  }
+  scene.add(sun);
+  const c = spec.camera;
+  const camera = new THREE.PerspectiveCamera(c.fov, spec.image.width / spec.image.height, 0.05, 100);
+  camera.position.set(...c.position);
+  camera.lookAt(new THREE.Vector3(...c.target));
+  camera.rotateZ(c.roll_deg * Math.PI / 180);
+  return { scene, camera };
+}
+"""
+
+# 뷰어 페이지에 주입해 계약된 장면 그래프를 그대로 읽어 온다 (role이 붙은 메시만).
+EXTRACT_JS = r"""
+function previzExtract(scene, camera) {
+  scene.updateMatrixWorld(true); camera.updateMatrixWorld(true);
+  const meshes = [];
+  scene.traverse((o) => {
+    if (!o.isMesh || !o.userData || !o.userData.role) return;
+    const pos = o.geometry && o.geometry.attributes && o.geometry.attributes.position;
+    if (!pos) return;
+    const positions = [];
+    for (let i = 0; i < pos.count; i++) positions.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+    const mat = Array.isArray(o.material) ? o.material[0] : o.material;
+    meshes.push({
+      role: String(o.userData.role), positions,
+      index: o.geometry.index ? Array.from(o.geometry.index.array) : null,
+      matrixWorld: Array.from(o.matrixWorld.elements),
+      color: mat && mat.color ? '#' + mat.color.getHexString() : null,
+    });
+  });
+  return {
+    camera: { isPerspective: !!camera.isPerspectiveCamera, fov: camera.fov, near: camera.near,
+              far: camera.far, matrixWorld: Array.from(camera.matrixWorld.elements) },
+    meshes,
+  };
+}
+"""
+
+# 팩토리 실험실 페이지: 정답 이미지 렌더링, 정답 측정, 제품 장면 측정(실루엣 포함)
+LAB_JS = r"""
+const norm3 = (v) => { const n = Math.hypot(...v) || 1; return v.map((x) => x / n); };
+let imgRenderer, maskRenderer;
+function renderSpec(spec, opts) {
+  const { scene, camera } = buildFromSpec(THREE, spec, opts);
+  const w = spec.image.width, h = spec.image.height;
+  if (!imgRenderer) {
+    imgRenderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    imgRenderer.setPixelRatio(1);
+  }
+  imgRenderer.setSize(w, h, false);
+  imgRenderer.shadowMap.enabled = !!opts.shadows;
+  imgRenderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  imgRenderer.render(scene, camera);
+  let canvas = imgRenderer.domElement;
+  if (opts.imageNoise) {
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d'); g.drawImage(canvas, 0, 0);
+    const d = g.getImageData(0, 0, w, h); const rng = mulberry32((spec.seed ^ 0x9e3779b9) >>> 0);
+    for (let i = 0; i < d.data.length; i += 4) {
+      const n = (rng() - 0.5) * opts.imageNoise;
+      d.data[i] += n; d.data[i + 1] += n; d.data[i + 2] += n;
+    }
+    g.putImageData(d, 0, 0); canvas = c;
+  }
+  return canvas.toDataURL('image/png');
+}
+function renderMask(raw, aspect, w = 160, h = 120) {
+  if (!maskRenderer) {
+    maskRenderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+    maskRenderer.setPixelRatio(1);
+  }
+  maskRenderer.setSize(w, h, false);
+  const scene = new THREE.Scene(); scene.background = new THREE.Color(0x000000);
+  const white = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+  for (const m of raw.meshes) {
+    if (m.role !== 'object') continue;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(m.positions, 3));
+    if (m.index) g.setIndex(m.index);
+    const mesh = new THREE.Mesh(g, white);
+    mesh.matrixAutoUpdate = false; mesh.matrix.fromArray(m.matrixWorld); scene.add(mesh);
+  }
+  const cam = new THREE.PerspectiveCamera(raw.camera.fov, aspect, Math.max(raw.camera.near, 0.001), raw.camera.far);
+  cam.matrixAutoUpdate = false; cam.matrix.fromArray(raw.camera.matrixWorld); cam.updateMatrixWorld(true);
+  maskRenderer.render(scene, cam);
+  const gl = maskRenderer.getContext(); const px = new Uint8Array(w * h * 4);
+  gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  let bits = '';
+  for (let i = 0; i < w * h; i++) bits += px[i * 4] > 127 ? '1' : '0';
+  return bits;
+}
+function analyze(raw, aspect) {
+  const e = raw.camera.matrixWorld;
+  const camera = {
+    isPerspective: raw.camera.isPerspective, fov: raw.camera.fov,
+    position: [e[12], e[13], e[14]], right: norm3([e[0], e[1], e[2]]),
+    up: norm3([e[4], e[5], e[6]]), forward: norm3([-e[8], -e[9], -e[10]]),
+  };
+  let groundY = null; const objects = []; const roles = {};
+  for (const m of raw.meshes) {
+    roles[m.role] = (roles[m.role] || 0) + 1;
+    const mw = new THREE.Matrix4().fromArray(m.matrixWorld);
+    const local = new THREE.Box3(); const v = new THREE.Vector3();
+    for (let i = 0; i < m.positions.length; i += 3) local.expandByPoint(v.set(m.positions[i], m.positions[i + 1], m.positions[i + 2]));
+    if (local.isEmpty()) continue;
+    if (m.role === 'ground') {
+      const top = local.clone().applyMatrix4(mw).max.y;
+      groundY = groundY === null ? top : Math.max(groundY, top);
+    } else if (m.role === 'object') {
+      const center = local.getCenter(new THREE.Vector3()).applyMatrix4(mw);
+      const scale = new THREE.Vector3(); mw.decompose(new THREE.Vector3(), new THREE.Quaternion(), scale);
+      const s = local.getSize(new THREE.Vector3()).multiply(scale);
+      objects.push({ center: center.toArray(), size: [Math.abs(s.x), Math.abs(s.y), Math.abs(s.z)], color: m.color });
+    }
+  }
+  return { camera, groundY, objects, roles, mask: renderMask(raw, aspect) };
+}
+window.lab = {
+  renderSpec,
+  analyze,
+  analyzeSpec: (spec) => {
+    const { scene, camera } = buildFromSpec(THREE, spec, {});
+    return analyze(previzExtract(scene, camera), spec.image.width / spec.image.height);
+  },
+};
+"""
+
+LAB_HTML = f"""<!doctype html><html><head><meta charset="utf-8">
+<script type="importmap">{{"imports": {{"three": "http://factory.local/three.module.js"}}}}</script>
+</head><body><script type="module">
+import * as THREE from 'three';
+{BUILDER_JS}
+{EXTRACT_JS}
+{LAB_JS}
+</script></body></html>"""
+
+
+# --- 채점: 정답 측정값과 제품 측정값 비교 ------------------------------------------
+
+def _hex_to_lab(hex_color: str) -> tuple[float, float, float]:
+    rgb = [int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in rgb]
+    x = (lin[0] * 0.4124 + lin[1] * 0.3576 + lin[2] * 0.1805) / 0.95047
+    y = lin[0] * 0.2126 + lin[1] * 0.7152 + lin[2] * 0.0722
+    z = (lin[0] * 0.0193 + lin[1] * 0.1192 + lin[2] * 0.9505) / 1.08883
+    f = lambda t: t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116  # noqa: E731
+    return 116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z))
+
+
+def _delta_e(a: str | None, b: str | None) -> float:
+    if not a or not b:
+        return 100.0
+    return math.dist(_hex_to_lab(a), _hex_to_lab(b))
+
+
+def _camera_frame(an: dict):
+    """카메라 바로 아래 바닥점을 원점으로, 카메라가 보는 수평 방향을 +z로 하고, 카메라 높이로 나눈 좌표계."""
+    cam = an["camera"]
+    p, f = cam["position"], cam["forward"]
+    ground_y = an["groundY"] if an["groundY"] is not None else 0.0
+    height = p[1] - ground_y
+    if height <= 1e-6:
+        return None
+    fh = _norm([f[0], 0.0, f[2]])
+    xr = _cross(fh, [0.0, 1.0, 0.0])
+    origin = [p[0], ground_y, p[2]]
+
+    def to_local(point):
+        v = _sub(point, origin)
+        return [_dot(v, xr) / height, v[1] / height, _dot(v, fh) / height]
+    return {"to_local": to_local, "height": height}
+
+
+def _angles(an: dict) -> tuple[float, float]:
+    cam = an["camera"]
+    pitch = math.degrees(math.asin(max(-1.0, min(1.0, cam["forward"][1]))))
+    roll = math.degrees(math.asin(max(-1.0, min(1.0, cam["right"][1]))))
+    return pitch, roll
+
+
+def _iou(a: str, b: str) -> float:
+    ia, ib = int(a, 2), int(b, 2)
+    union = (ia | ib).bit_count()
+    return (ia & ib).bit_count() / union if union else 1.0
+
+
+def score_metrics(m: dict) -> float:
+    """CONTRACT.md 6절의 충실도 점수."""
+    clamp = lambda x: max(0.0, min(1.0, x))  # noqa: E731
+    s_fov = clamp(1 - m["camera.fov_error_deg"] / 30)
+    s_pose = clamp(1 - (m["camera.pitch_error_deg"] + m["camera.roll_error_deg"]) / 2 / 15)
+    s_pos = clamp(1 - m["objects.position_error"] / 0.5)
+    s_sc = (clamp(1 - m["objects.size_error"]) + clamp(1 - m["objects.color_delta_e"] / 60)) / 2
+    s_iou = clamp(m["reprojection.iou"])
+    weighted = 0.20 * s_fov + 0.15 * s_pose + 0.20 * s_pos + 0.15 * s_sc + 0.30 * s_iou
+    return round(100 * m["objects.f1"] * weighted, 2)
+
+
+def compare(gt: dict, pred: dict, spec: dict) -> dict:
+    """정답 측정값(gt)과 제품 측정값(pred)을 지표로 바꾼다."""
+    m = dict(WORST_METRICS)
+    g_pitch, g_roll = _angles(gt)
+    p_pitch, p_roll = _angles(pred)
+    m["camera.fov_error_deg"] = abs(pred["camera"]["fov"] - gt["camera"]["fov"])
+    m["camera.pitch_error_deg"] = abs(p_pitch - g_pitch)
+    m["camera.roll_error_deg"] = abs(p_roll - g_roll)
+    m["reprojection.iou"] = _iou(gt["mask"], pred["mask"])
+
+    gf, pf = _camera_frame(gt), _camera_frame(pred)
+    if gf and pf:
+        g_objs = [{"c": gf["to_local"](o["center"]), "s": [x / gf["height"] for x in o["size"]], "color": o["color"]}
+                  for o in gt["objects"]]
+        p_objs = [{"c": pf["to_local"](o["center"]), "s": [x / pf["height"] for x in o["size"]], "color": o["color"]}
+                  for o in pred["objects"]]
+        # 정답 물체마다 가장 가까운 후보 12개 안에서 거리 합이 최소인 짝을 고른다
+        if len(p_objs) > 12:
+            p_objs = sorted(p_objs, key=lambda p: min(math.dist(p["c"], g["c"]) for g in g_objs))[:12]
+        best, best_cost = [], float("inf")
+        k = min(len(g_objs), len(p_objs))
+        for g_sel in itertools.combinations(range(len(g_objs)), k):
+            for p_sel in itertools.permutations(range(len(p_objs)), k):
+                pairs = [(gi, pi) for gi, pi in zip(g_sel, p_sel)
+                         if math.dist(g_objs[gi]["c"], p_objs[pi]["c"]) < 1.0]
+                cost = sum(math.dist(g_objs[gi]["c"], p_objs[pi]["c"]) for gi, pi in pairs) - 10 * len(pairs)
+                if cost < best_cost:
+                    best, best_cost = pairs, cost
+        tp = len(best)
+        m["objects.f1"] = 2 * tp / (len(g_objs) + len(p_objs)) if (g_objs or p_objs) else 1.0
+        if tp:
+            room_diag = math.hypot(spec["room"]["width"], spec["room"]["depth"]) / gf["height"]
+            pos_err, size_err, color_err = [], [], []
+            for gi, pi in best:
+                g, p = g_objs[gi], p_objs[pi]
+                pos_err.append(math.hypot(g["c"][0] - p["c"][0], g["c"][2] - p["c"][2]) / room_diag)
+                gh, ph = sorted([g["s"][0], g["s"][2]]), sorted([p["s"][0], p["s"][2]])
+                rel = [abs(ph[i] - gh[i]) / gh[i] for i in range(2)] + [abs(p["s"][1] - g["s"][1]) / g["s"][1]]
+                size_err.append(sum(rel) / 3)
+                color_err.append(_delta_e(g["color"], p["color"]))
+            m["objects.position_error"] = sum(pos_err) / tp
+            m["objects.size_error"] = sum(size_err) / tp
+            m["objects.color_delta_e"] = sum(color_err) / tp
+    return {k: round(v, 4) for k, v in m.items()}
+
+
+# --- 평가 대상 앱: 제품 프로세스 또는 채점기 검증용 기준 앱 --------------------------
+
+@dataclass
+class AppHandle:
+    base_url: str
+    data_dir: Path
+    stop: Callable[[], None]
+    log_path: Path | None = None
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def start_product_app(app_dir: Path, data_dir: Path, log_path: Path) -> AppHandle:
+    """CONTRACT.md 1절대로 제품을 띄운다."""
+    port = _free_port()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    log = open(log_path, "w")
+    proc = subprocess.Popen(
+        ["uv", "run", "app.py", "--port", str(port), "--data-dir", str(data_dir)],
+        cwd=app_dir, env=agent_env(CODEX_HOME=str(CODEX_HOME)),
+        stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+    )
+
+    def stop():
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+        log.close()
+
+    deadline = time.time() + 180
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            stop()
+            raise RuntimeError(f"app.py가 시작 중에 종료됐다 (exit {proc.returncode}, 로그 {log_path})")
+        with socket.socket() as s:
+            if s.connect_ex(("127.0.0.1", port)) == 0:
+                return AppHandle(f"http://127.0.0.1:{port}", data_dir, stop, log_path)
+        time.sleep(0.5)
+    stop()
+    raise RuntimeError(f"app.py가 180초 안에 포트 {port}를 열지 않았다 (로그 {log_path})")
+
+
+CALIBRATION_VIEWER = """<!doctype html><html><head><meta charset="utf-8">
+<style>html,body{margin:0;height:100%;background:#111}canvas{display:block}</style>
+<script type="importmap">{"imports": {"three": "/vendor/three.module.js"}}</script>
+</head><body><script type="module">
+import * as THREE from 'three';
+let resolveReady; window.__PREVIZ__ = { ready: new Promise((r) => (resolveReady = r)) };
+const key = new URLSearchParams(location.search).get('key');
+const { build } = await import(`/scenes/${key}.js`);
+const { scene, camera } = build(THREE);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+document.body.appendChild(renderer.domElement);
+renderer.render(scene, camera);
+Object.assign(window.__PREVIZ__, { scene, camera });
+resolveReady();
+</script></body></html>"""
+
+EMPTY_SPEC = {
+    "seed": 0, "image": {"width": IMAGE_W, "height": IMAGE_H}, "background": "#e9eef3",
+    "room": {"width": 6, "depth": 6, "height": 3, "floor_color": "#8d8478", "wall_color": "#d9d4c7"},
+    "camera": {"fov": 50, "position": [0, 1.6, 2.5], "target": [0, 1.2, -3], "roll_deg": 0},
+    "objects": [], "light": {"direction": [0.3, 0.9, 0.3], "intensity": 2.0, "ambient": 0.5},
+}
+
+
+def perturb(spec: dict, level: float) -> dict:
+    """정답에 정해진 방향으로 오차를 더한다. level이 클수록 모든 항목이 같은 쪽으로 더 틀린다."""
+    s = json.loads(json.dumps(spec))
+    s["camera"]["fov"] = min(110.0, s["camera"]["fov"] * (1 + level))
+    s["camera"]["target"][1] -= level * 2.5
+    s["camera"]["roll_deg"] += level * 10
+    for o in s["objects"]:
+        o["position"][0] += level * 1.0
+        o["size"] = [x * (1 + level) for x in o["size"]]
+        rgb = [int(o["color"][i:i + 2], 16) for i in (1, 3, 5)]
+        o["color"] = "#" + "".join(f"{round(c + (128 - c) * level):02x}" for c in rgb)
+    return s
+
+
+def calibration_app(kind: str, level: float, registry: dict, data_dir: Path) -> AppHandle:
+    """채점기 검증용 기준 앱. 계약만 구현하고 Codex는 부르지 않는다.
+
+    gt: 평가기가 등록한 정답 장면을 그대로 돌려준다 (검증 전용)
+    empty: 바닥과 벽만 있는 기본 장면을 돌려준다
+    noise: 정답에 level만큼 오차를 더해 돌려준다
+    """
+    (data_dir / "scenes").mkdir(parents=True, exist_ok=True)
+    status: dict[str, str] = {}
+
+    def resolve(image: bytes) -> dict | None:
+        spec = registry.get(hashlib.sha256(image).hexdigest())
+        if kind == "empty":
+            return EMPTY_SPEC
+        if spec is None:
+            return None
+        return spec if kind == "gt" else perturb(spec, level)
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, code: int, body: bytes | str, ctype: str = "application/json"):
+            data = body.encode() if isinstance(body, str) else body
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self):
+            if self.path != "/api/requests":
+                return self._send(404, "{}")
+            image = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            key = uuid.uuid4().hex[:12]
+            spec = resolve(image)
+            if spec is None:
+                status[key] = "failed"
+            else:
+                module = (f"const SPEC = {json.dumps(spec)};\n{BUILDER_JS}\n"
+                          "export function build(THREE) { return buildFromSpec(THREE, SPEC, {}); }\n")
+                (data_dir / "scenes" / f"{key}.js").write_text(module)
+                status[key] = "done"
+            self._send(202, json.dumps({"key": key}))
+
+        def do_GET(self):
+            url = urllib.parse.urlparse(self.path)
+            if url.path.startswith("/api/requests/"):
+                key = url.path.rsplit("/", 1)[-1]
+                if key not in status:
+                    return self._send(404, "{}")
+                return self._send(200, json.dumps({"status": status[key]}))
+            if url.path == "/view":
+                return self._send(200, CALIBRATION_VIEWER, "text/html; charset=utf-8")
+            if url.path.startswith("/scenes/") and url.path.endswith(".js"):
+                f = data_dir / "scenes" / Path(url.path).name
+                if f.exists():
+                    return self._send(200, f.read_bytes(), "text/javascript")
+            if url.path.startswith("/vendor/"):
+                f = VENDOR / Path(url.path).name
+                if f.exists():
+                    return self._send(200, f.read_bytes(), "text/javascript")
+            self._send(404, "{}")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return AppHandle(f"http://127.0.0.1:{server.server_port}", data_dir,
+                     lambda: (server.shutdown(), server.server_close()))
+
+
+# --- 평가 실행 -------------------------------------------------------------------
+
+@dataclass
+class Fixture:
+    id: str
+    seed: int
+    variant: str
+    spec: dict = field(default_factory=dict)
+    png: bytes = b""
+    gt: dict = field(default_factory=dict)
+
+
+def make_fixtures(suite: str, holdout_seeds: list[int] | None = None) -> list[Fixture]:
+    out = []
+    if suite in ("public", "all"):
+        out += [Fixture(f"public-{i + 1:02d}", s, "public") for i, s in enumerate(PUBLIC_SEEDS)]
+    if suite in ("holdout", "all"):
+        seeds = holdout_seeds or [random.SystemRandom().randrange(10_000, 1_000_000) for _ in range(HOLDOUT_COUNT)]
+        out += [Fixture(f"holdout-{s}", s, "holdout") for s in seeds]
+    for fx in out:
+        fx.spec = generate_scene(fx.seed, fx.variant)
+    return out
+
+
+def _http(method: str, url: str, body: bytes | None = None, ctype: str | None = None, timeout: float = 30):
+    req = urllib.request.Request(url, data=body, method=method, headers={"Content-Type": ctype} if ctype else {})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+        return 0, str(e).encode()
+
+
+class Lab:
+    """헤드리스 Chromium 하나로 정답 이미지 렌더링, 뷰어 측정, 실루엣 비교를 한다."""
+
+    def __init__(self):
+        from playwright.sync_api import sync_playwright
+        self._pw = sync_playwright().start()
+        self.browser = self._pw.chromium.launch(args=CHROMIUM_ARGS)
+        self.context = self.browser.new_context(viewport={"width": IMAGE_W, "height": IMAGE_H})
+        self.external_requests: list[str] = []
+
+        def guard(route):  # 로컬이 아닌 주소로 가는 요청은 막고 기록한다
+            host = urllib.parse.urlparse(route.request.url).hostname
+            if host in ("127.0.0.1", "localhost"):
+                return route.continue_()
+            self.external_requests.append(route.request.url)
+            return route.abort()
+
+        def serve_factory(route):
+            name = urllib.parse.urlparse(route.request.url).path.lstrip("/")
+            if name == "lab.html":
+                return route.fulfill(body=LAB_HTML, content_type="text/html")
+            f = VENDOR / name
+            if f.exists():
+                return route.fulfill(body=f.read_bytes(), content_type="text/javascript")
+            return route.fulfill(status=404, body="")
+
+        self.context.route("**/*", guard)                      # 먼저 등록한 경로가 나중에 검사된다
+        self.context.route("http://factory.local/**", serve_factory)
+        self.page = self.context.new_page()
+        self.page.goto("http://factory.local/lab.html")
+        self.page.wait_for_function("() => !!window.lab", timeout=30_000)
+
+    def render(self, fx: Fixture) -> None:
+        url = self.page.evaluate("([s, o]) => window.lab.renderSpec(s, o)", [fx.spec, VARIANT_OPTS[fx.variant]])
+        fx.png = base64.b64decode(url.split(",", 1)[1])
+        fx.gt = self.page.evaluate("(s) => window.lab.analyzeSpec(s)", fx.spec)
+
+    def measure_viewer(self, url: str, screenshot: Path) -> tuple[dict | None, int, str | None]:
+        """뷰어를 열어 장면 그래프를 읽는다. (측정값, 콘솔 오류 수, 실패 이유)"""
+        page = self.context.new_page()
+        errors: list[str] = []
+        page.on("console", lambda msg: errors.append(msg.text) if msg.type == "error" else None)
+        page.on("pageerror", lambda exc: errors.append(str(exc)))
+        try:
+            page.goto(url, wait_until="load", timeout=60_000)
+            page.wait_for_function("() => !!window.__PREVIZ__", timeout=30_000)
+            raw = page.evaluate(
+                "async () => {" + EXTRACT_JS + """
+                  const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('ready 시간 초과 (60초)')), 60000));
+                  await Promise.race([window.__PREVIZ__.ready, timeout]);
+                  const p = window.__PREVIZ__;
+                  if (!p.scene || !p.camera) throw new Error('scene 또는 camera가 없다');
+                  return previzExtract(p.scene, p.camera);
+                }""")
+            page.screenshot(path=str(screenshot))
+            analysis = self.page.evaluate("([r, a]) => window.lab.analyze(r, a)", [raw, IMAGE_W / IMAGE_H])
+            return analysis, len(errors), None
+        except Exception as e:
+            return None, len(errors), str(e).splitlines()[0][:300]
+        finally:
+            page.close()
+
+    def close(self):
+        self.browser.close()
+        self._pw.stop()
+
+
+def run_eval(app: AppHandle, fixtures: list[Fixture], out_dir: Path, lab: Lab,
+             registry: dict | None = None) -> dict:
+    """fixtures를 app에 요청하고 측정·채점한다. 결과는 out_dir/summary.json에도 남긴다."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    smoke: dict[str, list[str]] = {}   # 계약 스모크 위반: 항목 → 사례
+
+    def violation(name: str, detail: str):
+        smoke.setdefault(name, []).append(detail)
+
+    for fx in fixtures:
+        if not fx.png:
+            lab.render(fx)
+        if registry is not None:
+            registry[hashlib.sha256(fx.png).hexdigest()] = fx.spec
+        d = out_dir / fx.id
+        d.mkdir(exist_ok=True)
+        (d / "input.png").write_bytes(fx.png)
+        (d / "gt.json").write_text(json.dumps(fx.spec, indent=2))
+
+    # 1) 모두 요청한다
+    submitted = {}
+    for fx in fixtures:
+        code, body = _http("POST", f"{app.base_url}/api/requests", fx.png, "image/png")
+        try:
+            key = json.loads(body).get("key") if code == 202 else None
+        except (ValueError, AttributeError):
+            key = None
+        if not key:
+            violation("post", f"{fx.id}: {code} {body[:120]!r}")
+        submitted[fx.id] = {"key": key, "t0": time.time(), "status": "failed" if not key else "pending"}
+
+    # 2) done이 될 때까지 기다린다
+    deadline = time.time() + REQUEST_TIMEOUT_S
+    while time.time() < deadline and any(s["status"] == "pending" for s in submitted.values()):
+        for fx_id, s in submitted.items():
+            if s["status"] != "pending":
+                continue
+            code, body = _http("GET", f"{app.base_url}/api/requests/{s['key']}")
+            try:
+                status = json.loads(body).get("status") if code == 200 else None
+            except (ValueError, AttributeError):
+                status = None
+            if status not in ("pending", "done", "failed"):
+                violation("status", f"{fx_id}: {code} {body[:120]!r}")
+                s["status"] = "failed"
+            elif status != "pending":
+                s["status"], s["seconds"] = status, round(time.time() - s["t0"], 1)
+                s["error"] = json.loads(body).get("error")
+        time.sleep(0.5 if registry is not None else 2)
+    for s in submitted.values():
+        if s["status"] == "pending":
+            s["status"], s["error"] = "timeout", f"{REQUEST_TIMEOUT_S}초 안에 done이 되지 않았다"
+
+    # 3) 뷰어를 측정하고 채점한다
+    results = []
+    for fx in fixtures:
+        s = submitted[fx.id]
+        r = {"fixture": fx.id, "seed": fx.seed, "variant": fx.variant, "key": s["key"],
+             "status": s["status"], "seconds": s.get("seconds"), "error": s.get("error"),
+             "console_errors": 0, "metrics": dict(WORST_METRICS), "fidelity": 0.0}
+        if s["status"] == "done":
+            scene_file = app.data_dir / "scenes" / f"{s['key']}.js"
+            if not scene_file.exists():
+                violation("scene_file", f"{fx.id}: {scene_file.name} 없음")
+            elif "build" not in scene_file.read_text(errors="replace"):
+                violation("scene_file", f"{fx.id}: build 함수가 보이지 않는다")
+            before = len(lab.external_requests)
+            pred, n_err, err = lab.measure_viewer(f"{app.base_url}/view?key={s['key']}",
+                                                  out_dir / fx.id / "viewer.png")
+            if len(lab.external_requests) > before:
+                violation("local_only", f"{fx.id}: {lab.external_requests[before]}")
+            r["console_errors"] = n_err
+            if pred is None:
+                violation("viewer", f"{fx.id}: {err}")
+                r["error"] = err
+            elif not pred["camera"]["isPerspective"]:
+                violation("viewer", f"{fx.id}: camera가 PerspectiveCamera가 아니다")
+            elif not pred["roles"].get("ground"):
+                violation("ground_mesh", f"{fx.id}: role=ground 메시가 없다")
+            else:
+                r["metrics"] = compare(fx.gt, pred, fx.spec)
+                r["fidelity"] = score_metrics(r["metrics"])
+                (out_dir / fx.id / "measured.json").write_text(
+                    json.dumps({k: v for k, v in pred.items() if k != "mask"}, indent=2))
+        r["metrics"]["viewer.console_errors"] = r["console_errors"]
+        if s.get("seconds") is not None:
+            r["metrics"]["run.seconds"] = s["seconds"]
+        (out_dir / fx.id / "result.json").write_text(json.dumps(r, indent=2, ensure_ascii=False))
+        results.append(r)
+
+    if not any(r["status"] == "done" for r in results):
+        violation("done", "done이 된 요청이 하나도 없다")
+    summary = summarize(results)
+    summary["smoke"] = {"passed": not smoke, "violations": smoke}
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+    return summary
+
+
+def summarize(results: list[dict]) -> dict:
+    def mean(key: str, rows: list[dict]):
+        vals = [r["metrics"][key] for r in rows if key in r["metrics"]]
+        return round(sum(vals) / len(vals), 4) if vals else None
+
+    def block(rows: list[dict]) -> dict:
+        keys = sorted({k for r in rows for k in r["metrics"]})
+        return {"count": len(rows), "fidelity": round(sum(r["fidelity"] for r in rows) / len(rows), 2) if rows else None,
+                "metrics": {k: mean(k, rows) for k in keys}}
+
+    by_variant = {v: block([r for r in results if r["variant"] == v])
+                  for v in ("public", "holdout") if any(r["variant"] == v for r in results)}
+    return {"overall": block(results), **by_variant, "fixtures": results}
+
+
+def print_summary(label: str, summary: dict) -> None:
+    print(f"\n[{label}] smoke={'통과' if summary['smoke']['passed'] else '실패'}")
+    for name, cases in summary["smoke"]["violations"].items():
+        print(f"  계약 위반 {name}: {cases[0]}" + (f" 외 {len(cases) - 1}건" if len(cases) > 1 else ""))
+    print(f"  {'fixture':<16}{'status':<9}{'fidelity':>9}{'fov°':>8}{'pitch°':>8}{'f1':>6}{'pos':>7}{'iou':>6}")
+    for r in summary["fixtures"]:
+        m = r["metrics"]
+        print(f"  {r['fixture']:<16}{r['status']:<9}{r['fidelity']:>9.1f}{m['camera.fov_error_deg']:>8.1f}"
+              f"{m['camera.pitch_error_deg']:>8.1f}{m['objects.f1']:>6.2f}{m['objects.position_error']:>7.3f}"
+              f"{m['reprojection.iou']:>6.2f}")
+    for v in ("public", "holdout"):
+        if v in summary:
+            print(f"  평균 {v:<8} fidelity {summary[v]['fidelity']:.1f}")
+
+
+def new_eval_dir(label: str) -> Path:
+    d = VAR / "evals" / f"{datetime.now():%Y%m%d-%H%M%S}-{label}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def cmd_eval(args: argparse.Namespace) -> int:
+    app_dir = Path(args.app).resolve()
+    if not (app_dir / "app.py").exists():
+        print(f"{app_dir}/app.py가 없다")
+        return 1
+    out = new_eval_dir(args.label or app_dir.name)
+    fixtures = make_fixtures(args.suite)
+    app = start_product_app(app_dir, out / "data", out / "app.log")
+    lab = Lab()
+    try:
+        summary = run_eval(app, fixtures, out, lab)
+    finally:
+        lab.close()
+        app.stop()
+    print_summary(args.label or app_dir.name, summary)
+    print(f"\n결과: {out.relative_to(ROOT)}/summary.json")
+    return 0 if summary["smoke"]["passed"] else 1
+
+
+def cmd_calibrate(args: argparse.Namespace) -> int:
+    """기준 앱 세 종류로 채점기가 좋은 결과와 나쁜 결과를 구분하는지 확인한다."""
+    out = new_eval_dir("calibrate")
+    fixtures = make_fixtures("all")
+    registry: dict = {}
+    lab = Lab()
+    checks: list[tuple[str, bool, str]] = []
+    try:
+        # 같은 시드를 두 번 렌더링하면 같은 이미지가 나와야 한다
+        a, b = Fixture("x", PUBLIC_SEEDS[0], "public"), Fixture("y", PUBLIC_SEEDS[0], "public")
+        a.spec = b.spec = generate_scene(PUBLIC_SEEDS[0], "public")
+        lab.render(a)
+        lab.render(b)
+        checks.append(("결정성", a.png == b.png, "같은 시드 두 번 렌더링 → 같은 PNG"))
+
+        runs = [("gt", 0.0), ("empty", 0.0)] + [("noise", lv) for lv in (0.0, 0.1, 0.2, 0.4)]
+        scores = {}
+        for kind, level in runs:
+            label = kind if kind != "noise" else f"noise-{level:.1f}"
+            app = calibration_app(kind, level, registry, out / label / "data")
+            try:
+                summary = run_eval(app, fixtures, out / label, lab, registry)
+            finally:
+                app.stop()
+            print_summary(label, summary)
+            scores[label] = summary["overall"]["fidelity"]
+            checks.append((f"계약 스모크 ({label})", summary["smoke"]["passed"], "기준 앱이 계약대로 동작"))
+    finally:
+        lab.close()
+
+    noise = [scores[f"noise-{lv:.1f}"] for lv in (0.0, 0.1, 0.2, 0.4)]
+    checks += [
+        ("정답 앱", scores["gt"] >= 95, f"{scores['gt']:.1f}점 (기준 95 이상)"),
+        ("빈 앱", scores["empty"] <= 5, f"{scores['empty']:.1f}점 (기준 5 이하)"),
+        ("오차 주입 앱", noise[0] >= 95 and all(x > y for x, y in zip(noise, noise[1:])),
+         " > ".join(f"{x:.1f}" for x in noise) + " (오차 0%·10%·20%·40%, 단조 감소)"),
+    ]
+    print("\n채점기 검증")
+    for name, ok, detail in checks:
+        print(f"  {'OK  ' if ok else 'FAIL'}  {name:<20} {detail}")
+    (out / "calibration.json").write_text(json.dumps(
+        {"scores": scores, "checks": [{"name": n, "ok": ok, "detail": d} for n, ok, d in checks]},
+        indent=2, ensure_ascii=False))
+    print(f"\n결과: {out.relative_to(ROOT)}/calibration.json")
+    return 0 if all(ok for _, ok, _ in checks) else 1
+
+
 # ---------------------------------------------------------------------------
 # doctor: 이후 단계가 실패할 원인을 미리 찾는다
 # ---------------------------------------------------------------------------
@@ -302,7 +1203,7 @@ def check_browser() -> str:
     """합성 장면 렌더링에 필요한 헤드리스 Chromium과 WebGL을 확인한다."""
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
-        browser = p.chromium.launch(args=["--use-angle=swiftshader", "--enable-unsafe-swiftshader"])
+        browser = p.chromium.launch(args=CHROMIUM_ARGS)
         page = browser.new_page()
         webgl = page.evaluate("!!document.createElement('canvas').getContext('webgl2')")
         version = browser.version
@@ -423,9 +1324,15 @@ def main() -> int:
     p.add_argument("--skip-agents", action="store_true", help="모델 호출 점검을 건너뛴다")
     p = sub.add_parser("linear-setup", help="Linear 라벨·Needs Human 상태 준비와 읽기·쓰기 시험")
     p.add_argument("--team", help="Linear 팀 키 (기본 FACTORY_LINEAR_TEAM 또는 SWF)")
+    p = sub.add_parser("eval", help="제품 폴더의 app.py를 띄워 정답 장면으로 평가한다")
+    p.add_argument("--app", default=str(PRODUCT), help="app.py가 있는 폴더 (기본 product/)")
+    p.add_argument("--suite", choices=["public", "holdout", "all"], default="all")
+    p.add_argument("--label", help="결과 폴더 이름에 붙일 라벨")
+    sub.add_parser("calibrate", help="기준 앱(정답·빈 장면·오차 주입)으로 채점기를 검증한다")
 
     args = parser.parse_args()
-    handlers = {"init": cmd_init, "doctor": cmd_doctor, "linear-setup": cmd_linear_setup}
+    handlers = {"init": cmd_init, "doctor": cmd_doctor, "linear-setup": cmd_linear_setup,
+                "eval": cmd_eval, "calibrate": cmd_calibrate}
     return handlers[args.command](args)
 
 

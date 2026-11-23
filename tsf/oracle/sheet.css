@@ -13,3 +13,7 @@ td{padding:2px 8px 2px 0;font-size:12px}
 .ok{color:#1a7f37}.bad{color:#cf222e}
 .ph{width:320px;height:240px;display:flex;align-items:center;justify-content:center;background:#eaeef2;
     border-radius:4px;color:#8c959f;font-size:13px}
+.detail{display:flex;gap:12px;align-items:flex-start}
+.thumb{width:176px;margin-top:6px}
+.row .thumb img{width:176px;height:132px}
+.thumb .ph{width:176px;height:132px}

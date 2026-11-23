@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import signal
 import socket
 import subprocess
@@ -14,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
@@ -91,6 +92,9 @@ def start_product_app(app_dir: Path, data_dir: Path, log_path: Path, port: int |
     raise RuntimeError(f"app.py가 {reason} (로그 {log_path})")
 
 
+JITTER_SEED = 5                         # 흔들리는 기준 앱의 난수 시드. 요청 순서가 같으면 오차 수준도 같다
+
+
 @dataclass
 class CalibrationState:
     """기준 앱 하나의 상태: 종류, 오차 수준, 정답 등록부, 요청 상태."""
@@ -101,6 +105,8 @@ class CalibrationState:
     status: dict
     viewer: str
     builder: str
+    rng: random.Random = field(default_factory=lambda: random.Random(JITTER_SEED))
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
     def resolve(self, image: bytes) -> dict | None:
         spec = self.registry.get(hashlib.sha256(image).hexdigest())
@@ -108,7 +114,13 @@ class CalibrationState:
             return EMPTY_SPEC
         if spec is None:
             return None
-        return spec if self.kind == "gt" else perturb(spec, self.level)
+        if self.kind == "gt":
+            return spec
+        if self.kind == "jitter":   # 요청마다 오차 수준을 0~level에서 새로 뽑는다
+            with self.lock:
+                level = self.rng.uniform(0.0, self.level)
+            return perturb(spec, level)
+        return perturb(spec, self.level)
 
     def scene_module(self, spec: dict) -> str:
         return (f"const SPEC = {json.dumps(spec)};\n{self.builder}\n"
@@ -164,6 +176,8 @@ def calibration_app(kind: str, level: float, registry: dict, data_dir: Path) -> 
     gt: 평가기가 등록한 정답 장면을 그대로 돌려준다 (검증 전용)
     empty: 바닥과 벽만 있는 기본 장면을 돌려준다
     noise: 정답에 level만큼 오차를 더해 돌려준다
+    jitter: 요청마다 0~level에서 뽑은 만큼 오차를 더해 돌려준다 (같은 장면도 요청마다 결과가 흔들린다)
+    gt·empty·noise는 결정적이다. 같은 장면이면 바이트가 달라도 같은 결과를 돌려준다.
     """
     (data_dir / "scenes").mkdir(parents=True, exist_ok=True)
     state = CalibrationState(kind, level, registry, data_dir, {}, js("calibration-viewer.html"), js("builder.js"))

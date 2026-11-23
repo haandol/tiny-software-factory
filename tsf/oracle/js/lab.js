@@ -24,6 +24,34 @@ function renderSpec(spec, opts) {
   }
   return canvas.toDataURL('image/png');
 }
+async function decodePixels(dataUrl) {
+  const img = new Image(); img.src = dataUrl; await img.decode();
+  const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+  const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0);
+  return { canvas: c, g, data: g.getImageData(0, 0, c.width, c.height) };
+}
+// 안정성 측정용 두 번째 요청 이미지: 채널마다 [-amp, amp] 정수 노이즈를 더해 PNG로 다시 인코딩한다
+async function perturbImage(dataUrl, seed, amp) {
+  const { canvas, g, data } = await decodePixels(dataUrl);
+  const rng = mulberry32(seed >>> 0);
+  for (let i = 0; i < data.data.length; i += 4) {
+    for (let k = 0; k < 3; k++) data.data[i + k] += Math.floor(rng() * (2 * amp + 1)) - amp;
+  }
+  g.putImageData(data, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+// 두 이미지의 채널별 차이: 최대 절댓값과 다른 채널 비율 (채점기 검증용)
+async function pixelDiff(a, b) {
+  const [pa, pb] = [await decodePixels(a), await decodePixels(b)];
+  if (pa.data.data.length !== pb.data.data.length) return { max: 255, changed: 1 };
+  let max = 0, changed = 0, n = 0;
+  for (let i = 0; i < pa.data.data.length; i++) {
+    if (i % 4 === 3) continue;
+    const d = Math.abs(pa.data.data[i] - pb.data.data[i]);
+    max = Math.max(max, d); changed += d > 0; n++;
+  }
+  return { max, changed: changed / n };
+}
 function renderMask(raw, aspect, w = 160, h = 120) {
   if (!maskRenderer) {
     maskRenderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
@@ -77,6 +105,8 @@ function analyze(raw, aspect) {
 }
 window.lab = {
   renderSpec,
+  perturbImage,
+  pixelDiff,
   analyze,
   analyzeSpec: (spec) => {
     const { scene, camera } = buildFromSpec(THREE, spec, {});

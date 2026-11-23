@@ -3,7 +3,7 @@
 브라우저 쪽 코드는 js/ 폴더의 실제 JS 파일이다.
   builder.js   장면 명세 → three.js 장면 (정답 렌더링과 기준 앱이 같이 쓴다)
   extract.js   계약된 장면 그래프에서 role이 붙은 메시와 카메라를 읽는다 (제품 뷰어에 주입)
-  lab.js       정답 이미지 렌더링, 측정, 물체 실루엣 재렌더링
+  lab.js       정답 이미지 렌더링, 측정, 물체 실루엣 재렌더링, 두 번째 요청 이미지 (안정성)
 """
 
 from __future__ import annotations
@@ -13,13 +13,17 @@ import urllib.parse
 from pathlib import Path
 
 from ..config import VENDOR
-from .policy import CHROMIUM_ARGS, IMAGE_H, IMAGE_W, VARIANT_OPTS
+from .policy import CHROMIUM_ARGS, IMAGE_H, IMAGE_W, STABILITY_PIXEL_NOISE, VARIANT_OPTS
 
 JS_DIR = Path(__file__).resolve().parent / "js"
 
 
 def js(name: str) -> str:
     return (JS_DIR / name).read_text()
+
+
+def _data_url(png: bytes) -> str:
+    return "data:image/png;base64," + base64.b64encode(png).decode()
 
 
 def lab_html() -> str:
@@ -70,6 +74,19 @@ class Lab:
         url = self.page.evaluate("([s, o]) => window.lab.renderSpec(s, o)", [fx.spec, VARIANT_OPTS[fx.variant]])
         fx.png = base64.b64decode(url.split(",", 1)[1])
         fx.gt = self.page.evaluate("(s) => window.lab.analyzeSpec(s)", fx.spec)
+
+    def repeat_image(self, png: bytes, seed: int) -> bytes:
+        """같은 장면의 두 번째 요청 이미지. 채널마다 ±STABILITY_PIXEL_NOISE 이내 노이즈를 더해 다시 인코딩한다."""
+        url = self.page.evaluate("([u, s, a]) => window.lab.perturbImage(u, s, a)",
+                                 [_data_url(png), seed, STABILITY_PIXEL_NOISE])
+        out = base64.b64decode(url.split(",", 1)[1])
+        if out == png:
+            raise RuntimeError("두 번째 요청 이미지가 첫 이미지와 바이트가 같다")
+        return out
+
+    def pixel_diff(self, a: bytes, b: bytes) -> dict:
+        """두 PNG의 채널별 차이 {"max": 최대 절댓값, "changed": 다른 채널 비율}."""
+        return self.page.evaluate("([a, b]) => window.lab.pixelDiff(a, b)", [_data_url(a), _data_url(b)])
 
     def measure_viewer(self, url: str, screenshot: Path) -> tuple[dict | None, int, str | None]:
         """뷰어를 열어 장면 그래프를 읽는다. (측정값, 콘솔 오류 수, 실패 이유)"""

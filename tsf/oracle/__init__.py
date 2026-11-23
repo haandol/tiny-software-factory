@@ -10,10 +10,10 @@
   scoring      측정값 비교와 충실도 점수
   code         코드 지표 (파일·함수 길이, 분기 복잡도)
   apps         평가 대상 앱 실행, 기준 앱
-  runner       평가 실행과 요약
+  runner       평가 실행과 요약 (홀드아웃은 두 번 요청해 안정성을 잰다)
   sheet        평가 시트 (입력·뷰어·지표 한 장)
   acceptance   작업 명세의 수용 조건 판정
-  calibrate    채점기 검증
+  calibrate    채점기 검증 (정답·빈 장면·오차 주입·흔들림 기준 앱)
 """
 
 from .acceptance import judge, meets, parse_threshold

@@ -1,6 +1,6 @@
 """5단계: 발견 루프. 배포된 main을 평가해, 최종 목표에 못 미친 지표를 단계적 목표의 Linear 이슈로 만든다.
 
-  1. main 커밋마다 한 번, 새 홀드아웃 시드로 main을 평가한다
+  1. 제품 main 커밋이나 평가 자산 커밋이 바뀔 때마다 한 번, 새 홀드아웃 시드로 main을 평가한다
   2. FINAL_TARGETS에 못 미친 지표를 찾는다 (지표 하나당 이슈 하나)
   3. 다음 목표는 현재값과 최종 목표의 중간이다. 최종 목표를 한 번에 요구하면 통과하지 못하고 사람에게 넘어가기 때문이다
   4. 같은 지표의 이슈가 열려 있으면 만들지 않는다. 한 번에 최대 2개, 열린 자동 이슈는 최대 3개
@@ -16,7 +16,7 @@ import tempfile
 from datetime import datetime
 
 from . import linear
-from .config import PRODUCT, VAR
+from .config import PRODUCT, ROOT, VAR
 from .env import agent_env, git
 from .oracle import FINAL_TARGETS, Lab, make_fixtures, meets, new_eval_dir, run_eval, start_product_app
 
@@ -131,8 +131,10 @@ def discover(lab: Lab, force: bool = False, log=print) -> list[dict]:
     if not (PRODUCT / "app.py").exists():
         return []
     commit = git("rev-parse", "--short", "HEAD", cwd=PRODUCT)
+    # 평가 기준이 바뀌어도(factory-eval 병합) 제품 커밋은 그대로이므로, 평가 자산의 커밋도 함께 본다
+    oracle = git("log", "-1", "--format=%h", "--", "tsf/oracle", "CONTRACT.md", cwd=ROOT)
     state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
-    if state.get("commit") == commit and not force:
+    if state.get("commit") == commit and state.get("oracle") == oracle and not force:
         return []
     open_auto = [i for i in linear.fetch_issues(OPEN_STATES) if "auto-discovered" in i["labels"]]
     if len(open_auto) >= MAX_OPEN_AUTO:
@@ -157,7 +159,7 @@ def discover(lab: Lab, force: bool = False, log=print) -> list[dict]:
         log(f"발견 루프: {issue['identifier']} 생성 — {title}")
     if not found:
         log(f"발견 루프: main {commit}은 최종 목표를 모두 충족한다. 이슈를 만들지 않는다")
-    STATE_FILE.write_text(json.dumps({"commit": commit, "eval_dir": eval_dir.name, "at": datetime.now().isoformat(),
+    STATE_FILE.write_text(json.dumps({"commit": commit, "oracle": oracle, "eval_dir": eval_dir.name, "at": datetime.now().isoformat(),
                                       "gaps": found, "created": [c["identifier"] for c in created],
                                       "skipped": skipped}, indent=2, ensure_ascii=False))
     return created

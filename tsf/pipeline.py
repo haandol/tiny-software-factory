@@ -33,7 +33,8 @@ from .worker import run_work_item, workspace_key
 
 POLL_S = 30
 LABEL_TARGETS = {"factory-eval": "eval", "factory": "product"}   # 앞의 것이 우선
-DAILY_BUDGET_USD = 50
+# 하루 Claude Code 비용 상한. 개발 중에는 400달러 (사용자 지시, 2026-11-23). FACTORY_DAILY_BUDGET_USD로 바꾼다.
+DAILY_BUDGET_USD = float(os.environ.get("FACTORY_DAILY_BUDGET_USD", "400"))
 MAX_CONSECUTIVE_NEEDS_HUMAN = 3
 PAUSE_FILE = VAR / "pause.json"
 PAUSE_ACK = VAR / "pause-ack.json"       # 사람이 일시 정지 이슈를 Done으로 옮긴 기록

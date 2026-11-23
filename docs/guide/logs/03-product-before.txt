@@ -1,0 +1,10 @@
+$ uv run factory.py metrics product   (리팩터링 전)
+파일 1개, 코드 1082줄, 60줄 넘는 함수 3개
+  초과  code.max_file_lines       1082 (기준 400)  app.py
+  초과  code.max_function_lines    105 (기준 60)  app.py:fit_object
+  초과  code.max_complexity         54 (기준 15)  app.py:solve_room
+c05c5e2 LOCAL-1: 이미지를 받아 키를 발급하고, Codex를 헤드리스로 호출해 같은 구도의 three.js 프리비즈 장면 파일을 저장하고, /vie
+
+ __pycache__/app.cpython-315.pyc |   Bin 0 -> 103315 bytes
+ app.py                          |  1275 +
+ vendor/LICENSE                  |    21 +

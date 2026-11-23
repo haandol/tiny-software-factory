@@ -15,10 +15,20 @@ uv run factory.py init           # 로컬 준비 (codex-home, three.js, 제품 �
 uv run factory.py linear-setup   # Linear 라벨·Needs Human 상태 준비
 uv run factory.py doctor         # 환경 점검 (Claude Code·Codex를 한 번씩 호출)
 uv run factory.py calibrate      # 채점기 검증 (기준 앱 세 종류, 모델 호출 없음)
-uv run factory.py run work/LOCAL-1.yaml   # 작업 명세 하나를 구현·평가·병합·배포 (http://127.0.0.1:8000)
+uv run factory.py run work/LOCAL-1.yaml   # 작업 명세 하나를 구현·평가·(리팩터링)·병합·배포 (http://127.0.0.1:8000)
+uv run factory.py metrics product         # 코드 지표 (파일·함수 길이, 분기 복잡도)
+uv run factory.py refactor                # 병합된 main에 리팩터링 단계만 실행
 ```
 
 필요한 도구: Python 3.13, uv, git, Claude Code, Codex, AWS CLI(Bedrock default profile).
+
+## 구조
+
+- `factory.py`: 진입점 (명령 → `tsf/` 모듈)
+- `tsf/`: 팩토리 구현. `tsf/oracle/`은 평가 자산이라 `factory-eval` 이슈로만 바뀐다
+- `harness/v1/`: 에이전트 지시문
+- `CONTRACT.md`: 평가기가 제품을 관찰하는 계약
+- `product/`: 팩토리가 만드는 제품 (별도 git 저장소)
 
 ## 진행 상황
 
@@ -27,7 +37,7 @@ uv run factory.py run work/LOCAL-1.yaml   # 작업 명세 하나를 구현·평�
 | 0. 준비 | 완료 | `step-0-foundation` |
 | 1. 평가 먼저 | 완료 | `step-1-eval` |
 | 2. 단일 실행기 | 완료 | `step-2-worker` |
-| 3. 모듈화와 리팩터링 단계 | 진행 중 | `step-3-refactor` |
+| 3. 모듈화와 리팩터링 단계 | 완료 | `step-3-refactor` |
 | 4. Linear 연결 | 예정 | `step-4-pipeline` |
 | 5. 발견 루프 | 예정 | `step-5-discovery` |
 | 6. 학습 루프 | 예정 | `step-6-learning` |

@@ -1,0 +1,11 @@
+시작 14:40:35
+[REFACTOR-11231440] 리팩터링 단계: 기준 초과 code.max_file_lines, code.max_function_lines, code.max_complexity → Claude Code 실행
+[REFACTOR-11231440]   Claude Code 끝: 988초, $3.71, 도구 호출 58회
+[REFACTOR-11231440]   리팩터링 평가 시작 (커밋 d6a126c)
+[REFACTOR-11231440]   통과  run: app.py가 계약대로 시작됐다
+[REFACTOR-11231440]   통과  contract-smoke: 계약 위반 없음
+[REFACTOR-11231440]   통과  holdout-regression: 후보 95.7 / main 96.2 (같은 시드, 허용폭 8.0)
+[REFACTOR-11231440]   리팩터링 수용: behavior=통과, fidelity=통과, structure=통과
+[REFACTOR-11231440] 결과: done (Claude Code $3.71, Codex 호출 12회) → var/runs/REFACTOR-11231440-20261123-144041/run.json
+exit=0
+끝 14:58:27

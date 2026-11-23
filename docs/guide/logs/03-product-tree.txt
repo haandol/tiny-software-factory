@@ -1,0 +1,21 @@
+app.py                               16줄  tiny previz 진입점: 사진 한 장을 같은 구도의 three.js 프리비즈 장면으로 바꾸는 서비스를 띄운다 (구현은 p
+previz/cli.py                        38줄  명령행 진입: 인자를 읽고, 저장소·작업자를 만들어 남은 요청을 이어 처리하고, HTTP 서버를 띄운다.
+previz/codex.py                      74줄  Codex 헤드리스 호출: 이미지 하나를 측정값 JSON으로 받고, 실행 중인 Codex 프로세스를 추적해 종료 때 정리한다.
+previz/config.py                     21줄  설정: 파일 경로, 업로드·이미지 한도, Codex 호출 시간·횟수·동시성(환경 변수), 키 형식, 로그 출력.
+previz/geometry/calibration.py      125줄  카메라 보정: Codex 추정값(사전값)과 벽 선의 평행·직교, 상자 모서리의 직각 조건으로 화각·피치·롤을 함께 푼다.
+previz/geometry/camera.py            61줄  카메라 모델(투영·역투영)과, Codex 추정값과 지평선만으로 만든 초기 카메라.
+previz/geometry/colors.py            83줄  색: sRGB↔선형 변환, Codex 물체 색 보정, 사진에서 바닥·벽·배경 면 색을 재서 뷰어 조명 기준 재질 색으로 되돌리
+previz/geometry/__init__.py           4줄  기하: Codex 측정값을 3D 장면 명세로 푼다 (카메라 보정 → 물체 피팅 → 방 → 면 색 → 명세).
+previz/geometry/lm.py                50줄  작은 비선형 최소제곱 풀이: Levenberg–Marquardt(수치 야코비안)와 여러 초기값 중 최선 고르기.
+previz/geometry/objects.py          150줄  물체 피팅: 상자·원기둥 모양을 투영해 Codex가 잰 bbox(와 바닥 모서리)에 맞추는 최소제곱으로 위치·크기·yaw를 구
+previz/geometry/room.py             118줄  방: 벽과 바닥의 경계선을 바닥으로 역투영해 방 방향·벽 위치를 풀고, 벽 윗변으로 벽 높이를 구한다.
+previz/geometry/shapes.py            24줄  물체 모양(상자·원기둥)의 3D 꼭짓점: 투영해 bbox에 맞추거나 화면에서 가릴 영역을 구할 때 쓴다.
+previz/geometry/spec.py              61줄  장면 명세 조립: 카메라 보정 → 물체 피팅 → 방 → 주광 → 면 색을 차례로 풀어 뷰어가 그릴 명세(dict)를 만든다.
+previz/geometry/values.py            26줄  Codex 측정값 읽기: 어떤 값이 와도 유한한 숫자, #rrggbb 색, (x, y) 픽셀 점으로 바꾼다.
+previz/images.py                     20줄  업로드 이미지 정규화: EXIF 방향 보정, 투명 배경을 흰색으로, RGB, 긴 변을 MAX_IMAGE_SIDE 이하로 줄인 
+previz/__init__.py                   13줄  tiny previz 구현 패키지: 사진 한 장을 같은 구도의 three.js 프리비즈 장면 파일로 바꾼다.
+previz/prompt.py                    102줄  Codex에 주는 지시문(PROMPT)과 출력 스키마(ANALYSIS_SCHEMA). 측정값의 이름과 뜻을 여기서 정한다.
+previz/scene_file.py                 10줄  장면 파일: 장면 명세를 `export const SPEC` + `export function build(THREE)` ES 
+previz/store.py                      32줄  요청 기록 저장소: 키마다 상태(pending/done/failed)를 <data-dir>/requests/<키>.json에 
+previz/web.py                       115줄  HTTP: 요청 접수(POST /api/requests), 상태·원본 이미지, 뷰어·첫 화면 HTML, 장면 파일, three
+previz/worker.py                     63줄  백그라운드 작업: 업로드를 정규화하고, Codex 측정 → 장면 명세 → 장면 파일 저장을 최대 CODEX_TRIES번 시도한

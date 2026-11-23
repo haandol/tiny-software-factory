@@ -1,0 +1,4 @@
+파일 21개, 코드 1655줄, 60줄 넘는 함수 0개
+  OK    code.max_file_lines        233 (기준 400)  tsf/worker.py
+  OK    code.max_function_lines     40 (기준 60)  tsf/oracle/scenes.py:generate_scene
+  OK    code.max_complexity         14 (기준 15)  tsf/worker.py:run_work_item

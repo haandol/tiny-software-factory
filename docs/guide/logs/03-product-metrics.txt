@@ -1,0 +1,11 @@
+$ uv run factory.py metrics product   (리팩터링 전)
+파일 1개, 코드 1082줄, 60줄 넘는 함수 3개
+  초과  code.max_file_lines       1082 (기준 400)  app.py
+  초과  code.max_function_lines    105 (기준 60)  app.py:fit_object
+  초과  code.max_complexity         54 (기준 15)  app.py:solve_room
+
+$ uv run factory.py metrics product   (리팩터링 후)
+파일 21개, 코드 1206줄, 60줄 넘는 함수 0개
+  OK    code.max_file_lines        150 (기준 400)  previz/geometry/objects.py
+  OK    code.max_function_lines     32 (기준 60)  previz/geometry/lm.py:levenberg_marquardt
+  OK    code.max_complexity         12 (기준 15)  previz/geometry/objects.py:read_bbox

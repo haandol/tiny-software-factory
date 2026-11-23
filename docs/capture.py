@@ -25,7 +25,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-import factory as F  # noqa: E402
+from tsf.env import load_dotenv  # noqa: E402
+from tsf.linear import linear, linear_team, team_key  # noqa: E402
+from tsf.oracle import Lab, eval_sheet_html  # noqa: E402
 
 BASE_CSS = """
 body{margin:0;background:#f4f5f7;font-family:'WenQuanYi Zen Hei',sans-serif;color:#1f2328}
@@ -36,7 +38,7 @@ h1{font-size:18px;margin:0 0 12px}
 
 
 def shot(html_doc: str, out: Path, width: int = 1100) -> None:
-    lab = F.Lab()
+    lab = Lab()
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
         lab.screenshot_html(html_doc, out, width)
@@ -72,7 +74,7 @@ def cmd_term(args):
 def cmd_sheet(args):
     d = Path(args.eval_dir)
     summary = json.loads((d / "summary.json").read_text())
-    shot(F.eval_sheet_html(summary, d, args.title or d.name), Path(args.out), 1200)
+    shot(eval_sheet_html(summary, d, args.title or d.name), Path(args.out), 1200)
 
 
 def cmd_grid(args):
@@ -112,11 +114,11 @@ LINEAR_CSS = """
 
 
 def cmd_linear(args):
-    team = F.linear_team(F.team_key())
+    team = linear_team(team_key())
     note = ('<div class="note">Linear GraphQL API로 읽은 실제 데이터를 그린 그림이다. '
             'Linear 화면의 스크린샷이 아니다.</div>')
     if args.issue:
-        data = F.linear("""query($id: String!) { issue(id: $id) {
+        data = linear("""query($id: String!) { issue(id: $id) {
             identifier title description state { name } labels { nodes { name color } }
             comments(first: 50) { nodes { body createdAt user { name } } } } }""", {"id": args.issue})["issue"]
         labels = "".join(f'<span class="lb" style="background:{l["color"]}">{html.escape(l["name"])}</span>'
@@ -129,7 +131,7 @@ def cmd_linear(args):
                 f'<div class="desc">{html.escape(data["description"] or "")}</div>{comments}</div>{note}</div>')
         return shot(doc(body, LINEAR_CSS), Path(args.out), args.width)
 
-    issues = F.linear("""query($teamId: ID!) { issues(first: 50, filter: { team: { id: { eq: $teamId } } },
+    issues = linear("""query($teamId: ID!) { issues(first: 50, filter: { team: { id: { eq: $teamId } } },
         orderBy: updatedAt) { nodes { identifier title state { name } labels { nodes { name color } } } } }""",
                       {"teamId": team["id"]})["issues"]["nodes"]
     order = ["Backlog", "Todo", "In Progress", "Needs Human", "In Review", "Done", "Canceled"]
@@ -218,6 +220,23 @@ def cmd_run(args):
             f'<span class="k">공개 {sc["public"]} / 홀드아웃 {sc["holdout"]} / main {sc["main_same_seeds"]}</span>'
             f'<span class="k">Codex {a["codex_calls"]}회'
             + (f', 생성 {min(gen):.0f}~{max(gen):.0f}초' if gen else "") + f'</span>{conds}</div>')
+    f = rec.get("refactor") or {}
+    if f.get("ran"):
+        b, a = f["code_before"], f["code_after"]
+        rows = "".join(f'<div class="cond">{k}: {b[k]} → <b>{a[k]}</b></div>' for k in
+                       ("code.files", "code.total_lines", "code.max_file_lines", "code.max_function_lines",
+                        "code.max_complexity", "code.long_functions"))
+        checks = " · ".join(f'<span class="{"ok" if v else "bad"}">{k} {"통과" if v else "실패"}</span>'
+                            for k, v in (f.get("checks") or {}).items())
+        sc, cl = f.get("score") or {}, f["claude"]
+        boxes.append(
+            f'<div class="box"><b>리팩터링 단계</b> · 커밋 {f.get("commit")} · '
+            f'{"<span class=ok>수용</span>" if f.get("accepted") else "<span class=bad>거부</span>"} · {checks}<br>'
+            f'<span class="k">Claude Code {cl["seconds"]}초, ${cl["cost_usd"] or 0:.2f}, 도구 {cl["tool_calls"]}회</span>'
+            f'<span class="k">공개 {sc.get("public")} / 홀드아웃 {sc.get("holdout")} / main {sc.get("main_same_seeds")}</span>'
+            f'<span class="k">Codex {f.get("codex_calls", 0)}회</span>{rows}</div>')
+    elif f:
+        boxes.append(f'<div class="box"><b>리팩터링 단계</b> · 건너뜀 ({html.escape(f.get("reason", ""))})</div>')
     d = rec.get("delivery") or {}
     tail = (f'<div class="box">결과 <b>{rec["status"]}</b> · Claude Code 합계 ${rec.get("cost_usd", 0):.2f} · '
             f'Codex {rec.get("codex_calls", 0)}회' + (f' · main {d.get("merged")} 배포 {d.get("url")}' if d.get("merged") else "")
@@ -227,7 +246,7 @@ def cmd_run(args):
 
 
 def cmd_page(args):
-    lab = F.Lab()
+    lab = Lab()
     try:
         page = lab.context.new_page()
         page.set_viewport_size({"width": args.width, "height": args.height})
@@ -244,7 +263,7 @@ def cmd_page(args):
 
 
 def main():
-    F.load_dotenv()
+    load_dotenv()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("term"); p.add_argument("title"); p.add_argument("out")

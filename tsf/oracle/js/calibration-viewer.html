@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>html,body{margin:0;height:100%;background:#111}canvas{display:block}</style>
+<script type="importmap">{"imports": {"three": "/vendor/three.module.js"}}</script>
+</head><body><script type="module">
+import * as THREE from 'three';
+let resolveReady; window.__PREVIZ__ = { ready: new Promise((r) => (resolveReady = r)) };
+const key = new URLSearchParams(location.search).get('key');
+const { build } = await import(`/scenes/${key}.js`);
+const { scene, camera } = build(THREE);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+document.body.appendChild(renderer.domElement);
+renderer.render(scene, camera);
+Object.assign(window.__PREVIZ__, { scene, camera });
+resolveReady();
+</script></body></html>

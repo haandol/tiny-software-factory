@@ -1,0 +1,11 @@
+$ uv run factory.py metrics  (리팩터링 전: factory.py 단일 파일)
+파일 1개, 코드 1545줄, 60줄 넘는 함수 4개
+  초과  code.max_file_lines       1545 (기준 400)  factory.py
+  초과  code.max_function_lines    100 (기준 60)  factory.py:run_eval
+  초과  code.max_complexity         34 (기준 15)  factory.py:run_eval
+
+$ uv run factory.py metrics  (리팩터링 후: factory.py + tsf/)
+파일 21개, 코드 1655줄, 60줄 넘는 함수 0개
+  OK    code.max_file_lines        233 (기준 400)  tsf/worker.py
+  OK    code.max_function_lines     40 (기준 60)  tsf/oracle/scenes.py:generate_scene
+  OK    code.max_complexity         14 (기준 15)  tsf/worker.py:run_work_item

@@ -1,0 +1,4 @@
+파일 1개, 코드 1545줄, 60줄 넘는 함수 4개
+  초과  code.max_file_lines       1545 (기준 400)  factory.py
+  초과  code.max_function_lines    100 (기준 60)  factory.py:run_eval
+  초과  code.max_complexity         34 (기준 15)  factory.py:run_eval

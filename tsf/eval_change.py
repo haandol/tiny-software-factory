@@ -55,7 +55,9 @@ def run_calibrate(wt: Path, log_path: Path) -> tuple[bool, str]:
     out = subprocess.run(["uv", "run", "--quiet", "factory.py", "calibrate"], cwd=wt, env=agent_env(),
                          capture_output=True, text=True, timeout=1800)
     log_path.write_text(out.stdout + out.stderr)
-    tail = "\n".join((out.stdout + out.stderr).splitlines()[-16:])
+    lines = (out.stdout + out.stderr).splitlines()
+    start = next((i for i, l in enumerate(lines) if l.startswith("채점기 검증")), max(0, len(lines) - 16))
+    tail = "\n".join(l.strip() for l in lines[start + 1:] if l.strip().startswith(("OK", "FAIL")))
     return out.returncode == 0, tail
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.13"
-# dependencies = ["playwright==1.65.2", "pyyaml>=6"]
+# dependencies = ["playwright==1.65.2", "pyyaml>=6", "markdown>=3.6"]
 # ///
 """소개 자료용 캡처 도구. 팩토리의 일부가 아니라 docs/guide/의 이미지를 만드는 데만 쓴다.
 
@@ -20,6 +20,7 @@ import argparse
 import base64
 import html
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -107,8 +108,11 @@ LINEAR_CSS = """
 .lb{display:inline-block;border-radius:10px;padding:0 6px;font-size:10px;color:#fff;margin:3px 3px 0 0}
 .chip{display:inline-block;border:1px solid #d0d7de;border-radius:10px;padding:1px 8px;margin:2px;font-size:12px;background:#fff}
 .issue{background:#fff;border:1px solid #d0d7de;border-radius:8px;padding:14px}
-.desc{white-space:pre-wrap;font-size:13px;background:#fafbfc;border-radius:6px;padding:8px;margin:8px 0}
-.cm{border-top:1px solid #e1e4e8;padding:8px 0;font-size:12px;white-space:pre-wrap}
+.desc{font-size:13px;background:#fafbfc;border-radius:6px;padding:4px 10px;margin:8px 0}.desc h2{font-size:14px;margin:8px 0 4px}.desc table{border-collapse:collapse}.desc td,.desc th{border:1px solid #d0d7de;padding:2px 6px}
+.cm{border-top:1px solid #e1e4e8;padding:8px 0;font-size:12px}
+.cm table{border-collapse:collapse;margin:6px 0}.cm td,.cm th{border:1px solid #d0d7de;padding:2px 6px;font-size:11px}
+.cm pre{background:#f6f8fa;padding:6px;border-radius:4px;white-space:pre-wrap;font-size:11px}.cm p{margin:4px 0}
+.cm img{max-width:360px;border:1px solid #d0d7de}
 .cm .who{color:#57606a;font-size:11px}
 """
 
@@ -123,12 +127,19 @@ def cmd_linear(args):
             comments(first: 50) { nodes { body createdAt user { name } } } } }""", {"id": args.issue})["issue"]
         labels = "".join(f'<span class="lb" style="background:{l["color"]}">{html.escape(l["name"])}</span>'
                          for l in data["labels"]["nodes"])
+        import markdown
+        from datetime import datetime
+
+        def when(ts):  # Linear는 UTC로 준다. 로컬 시각으로 보인다
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M %Z")
         comments = "".join(
-            f'<div class="cm"><div class="who">{c["createdAt"][:16].replace("T", " ")}</div>{html.escape(c["body"])}</div>'
+            f'<div class="cm"><div class="who">{when(c["createdAt"])}</div>'
+            f'{markdown.markdown(re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"`[첨부 이미지: \1]`", c["body"]), extensions=["tables", "fenced_code"])}</div>'
             for c in sorted(data["comments"]["nodes"], key=lambda c: c["createdAt"]))
         body = (f'<div class="wrap"><h1>Linear 이슈 {data["identifier"]}</h1><div class="issue">'
                 f'<b>{html.escape(data["title"])}</b> <span class="chip">{data["state"]["name"]}</span>{labels}'
-                f'<div class="desc">{html.escape(data["description"] or "")}</div>{comments}</div>{note}</div>')
+                f'<div class="desc">{markdown.markdown(data["description"] or "", extensions=["tables"])}</div>'
+                f'{comments}</div>{note}</div>')
         return shot(doc(body, LINEAR_CSS), Path(args.out), args.width)
 
     issues = linear("""query($teamId: ID!) { issues(first: 50, filter: { team: { id: { eq: $teamId } } },

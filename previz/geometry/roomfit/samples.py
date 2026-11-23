@@ -100,7 +100,53 @@ def prior_from(med: np.ndarray) -> Prior:
     return Prior(np.array([med[0], med[1], med[2], 0.0, med[4], med[5], med[6], med[7]]), PRIOR_SIG.copy())
 
 
+def _median_field(vals):
+    vals = [float(v) for v in vals if isinstance(v, (int, float)) and math.isfinite(v)]
+    return float(np.median(vals)) if vals else None
+
+
+def pooled_analysis(analyses: list[dict]) -> dict:
+    """표본들을 합친 측정값 하나: 카메라·방 값은 중앙값, 벽 선은 모서리별 끝점 중앙값 (과반이 잰 것만)."""
+    cam = {k: _median_field([(a.get("camera") or {}).get(k) for a in analyses])
+           for k in ("vfov_deg", "pitch_deg", "roll_deg", "horizon_y_at_left", "horizon_y_at_right", "height_m")}
+    room = {k: _median_field([(a.get("room") or {}).get(k) for a in analyses]) for k in ("width_m", "depth_m", "height_m")}
+    walls = {}
+    for k, (p0, p1) in pooled_codex_lines(analyses).items():
+        side, edge = k.split("_")
+        w = walls.setdefault(side, {"side": side, "bottom_edge": [], "top_edge": []})
+        w[f"{edge}_edge"] = [{"x": float(p0[0]), "y": float(p0[1])}, {"x": float(p1[0]), "y": float(p1[1])}]
+    from ...merge import merged_measurements_all
+    return {"camera": {k: v for k, v in cam.items() if v is not None}, "room": {k: v for k, v in room.items() if v is not None},
+            "walls": list(walls.values()), "objects": merged_measurements_all(analyses)}
+
+
+import os
+PRIOR_MODE = os.environ.get("PREVIZ_PRIOR_MODE", "median")
+
+
+def prior_center(analyses: list[dict], W: int, H: int) -> np.ndarray | None:
+    inits = sample_inits(analyses, W, H)
+    if not inits:
+        return None
+    med = np.median(np.array(inits), axis=0)
+    if PRIOR_MODE == "pooled":
+        try:
+            x = initial_x(pooled_analysis(analyses), W, H)
+            if np.all(np.isfinite(x)):
+                return x
+        except Exception:
+            pass
+    if PRIOR_MODE == "mix":
+        try:
+            x = initial_x(pooled_analysis(analyses), W, H)
+            if np.all(np.isfinite(x)):
+                return np.median(np.array(inits + [x]), axis=0)
+        except Exception:
+            pass
+    return med
+
+
 def sample_prior(analyses: list[dict], W: int, H: int) -> Prior:
     """표본 초기값 중앙값의 사전값. 하나도 못 풀면 DEFAULT_X를 중심으로 한다."""
-    inits = sample_inits(analyses, W, H)
-    return prior_from(np.median(np.array(inits), axis=0) if inits else DEFAULT_X)
+    med = prior_center(analyses, W, H)
+    return prior_from(med if med is not None else DEFAULT_X)

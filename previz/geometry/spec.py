@@ -19,12 +19,13 @@ DEFAULT_SUN = (0.3, 1.0, 0.4)
 
 
 def fit_objects(a: dict, cam: Cam) -> list[dict]:
+    """측정값의 물체마다 맞춘 명세. "index"는 측정값 물체 번호 (맞추지 못한 물체는 빠진다)."""
     objects = []
-    for o in (a.get("objects") or [])[:MAX_OBJECTS]:
+    for i, o in enumerate((a.get("objects") or [])[:MAX_OBJECTS]):
         if isinstance(o, dict):
             fit = fit_object(o, cam)
             if fit:
-                objects.append(fit)
+                objects.append({**fit, "index": i})
     return objects
 
 
@@ -71,10 +72,17 @@ def fixed_camera(a: dict, W: int, H: int, camera: dict) -> tuple[Cam, dict]:
     return Cam(W, H, vfov, pitch, roll, height), info
 
 
-def build_spec(a: dict, W: int, H: int, img: np.ndarray | None = None, camera: dict | None = None) -> dict:
-    """camera(화각·피치·롤)가 있으면 그 카메라를 쓰고, 없으면 이 측정값 하나로 카메라를 보정한다."""
-    cam, cam_info = fixed_camera(a, W, H, camera) if camera else solve_camera(a, W, H)
-    objects = fit_objects(a, cam)
+def scene_camera(a: dict, W: int, H: int, camera: dict | None = None) -> tuple[Cam, dict]:
+    """camera(화각·피치·롤)가 있으면 그 카메라를 이 측정값의 카메라 높이로 쓰고, 없으면 이 측정값 하나로 보정한다."""
+    return fixed_camera(a, W, H, camera) if camera else solve_camera(a, W, H)
+
+
+def build_spec(a: dict, W: int, H: int, img: np.ndarray | None = None, camera: dict | None = None,
+               objects: list[dict] | None = None) -> dict:
+    """camera(화각·피치·롤)가 있으면 그 카메라를 쓰고, 없으면 이 측정값 하나로 카메라를 보정한다.
+    objects가 있으면 측정값의 물체를 맞추지 않고 그 물체(이 측정값의 카메라 높이 단위)를 쓴다."""
+    cam, cam_info = scene_camera(a, W, H, camera)
+    objects = fit_objects(a, cam) if objects is None else objects
     room = solve_room(a, cam, objects)
     sun = sun_direction(a)
     background = to_hex((a.get("room") or {}).get("background_color"), "#e9eef3")

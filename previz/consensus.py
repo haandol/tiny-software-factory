@@ -21,7 +21,8 @@ import numpy as np
 from .config import log
 from .geometry.calibration import camera_fit_cost
 from .geometry.roomfit import image_camera
-from .geometry.spec import build_spec
+from .geometry.spec import build_spec, scene_camera
+from .merge import merged_objects
 
 MIN_CONSTRAINTS = 2          # 선·상자 관측이 이만큼 있어야 보정을 하고, 잔차를 견줄 뜻이 있다
 AGREEMENT_SCALE_DEG = 5.0    # 표본 화각 중앙값에서 이만큼 벗어나면
@@ -91,4 +92,17 @@ def pick(analyses: list[tuple[int, dict]], W: int, H: int, img: np.ndarray | Non
             log(f"표본 #{sample}로 장면을 풀지 못했다: {e}")
     if not candidates:
         raise RuntimeError(f"측정값으로 장면을 풀지 못했다: {last_error}")
-    return choose(candidates), candidates
+    best = choose(candidates)
+    return with_shared_objects(best, analyses, candidates, W, H, img, camera), candidates
+
+
+def with_shared_objects(best: Candidate, analyses: list[tuple[int, dict]], candidates: list[Candidate], W: int, H: int,
+                        img: np.ndarray | None, camera: dict | None) -> Candidate:
+    """고른 후보의 장면을, 물체만 모든 표본으로 합친 물체(previz/merge.py)로 바꿔 다시 짓는다. 합칠 물체가 없으면 그대로."""
+    fitted = {c.sample: c.spec["objects"] for c in candidates}
+    cam, _ = scene_camera(best.analysis, W, H, camera)
+    objects = merged_objects([a for _, a in analyses], [fitted.get(s) for s, _ in analyses], cam)
+    if not objects:
+        return best
+    spec = build_spec(best.analysis, W, H, img, camera, objects=objects)
+    return Candidate(best.sample, best.analysis, spec, best.cost, best.constraints)

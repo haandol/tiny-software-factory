@@ -9,7 +9,7 @@ from .boxes import consensus_boxes, object_boxes
 from .fit import FIT_ERRORS, FitResult, Prior, evaluate, fit_points, fit_to_codex, prune_lines, with_fov
 from .model import RoomModel
 from .observe import first_observations
-from .samples import pooled_codex_lines, prior_from, sample_inits, vote_walls
+from .samples import pooled_codex_lines, prior_center, prior_from, vote_walls
 
 FOV_GRID = tuple(range(24, 115, 6))     # 화각 시작값 격자 (도)
 GRID_HOLD_SIG = 1.0                       # 시작값마다 Codex 선으로 먼저 맞출 때 화각을 묶는 폭 (도)
@@ -34,10 +34,9 @@ def calibrate(analyses: list[dict], W: int, H: int, img: np.ndarray, E: EdgeImag
     E = E or EdgeImage(img)
     boxes = object_boxes(analyses)
     objects = consensus_boxes(analyses)
-    inits = sample_inits(analyses, W, H)
-    if not inits:
+    med = prior_center(analyses, W, H)
+    if med is None:
         return None
-    med = np.median(np.array(inits), axis=0)
     prior = prior_from(med)
     lines = pooled_codex_lines(analyses)
     first = first_observations(E, model, med, analyses, lines, boxes, objects)

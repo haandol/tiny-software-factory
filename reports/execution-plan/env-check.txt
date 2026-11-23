@@ -1,0 +1,52 @@
+# 로컬 환경 확인 (2026-11-23, EC2)
+python3  Python 3.13.6
+uv       uv 0.13.5 (aarch64-unknown-linux-gnu)
+git      git version 2.43.0
+claude   2.1.330 (Claude Code)
+codex    codex-cli 0.171.0
+Playwright browsers (기존 캐시): chromium-1234 chromium-1248 chromium-1252 
+python playwright: not installed (uv 인라인 의존성으로 설치 예정)
+
+# AWS
+AWS_PROFILE (현재 셸)=other-profile
+AWS default profile: sts get-caller-identity 성공
+default profile region: us-east-1
+CLAUDE_CODE_USE_BEDROCK=1
+
+# Codex 설정 (~/.codex/config.toml 발췌, 비밀값 제외)
+model_reasoning_effort = "xhigh"
+model_provider = "amazon-bedrock-runtime"
+model = "us.openai.gpt-6.2-astra"
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+MCP 서버 수: 3, 플러그인 항목 수: 3, 전역 AGENTS.md: 있음
+
+LINEAR_API_KEY: unset
+
+# npm latest (2026-11-23)
+three  0.187.0
+
+# claude --help (발췌)
+  --append-system-prompt <prompt>       Add text to the end of the default
+  --bare                                Minimal mode: skip hooks (those defined
+  --dangerously-skip-permissions        Bypass all permission checks.
+                                        --output-format=stream-json)
+                                        --output-format=stream-json)
+  --json-schema <schema>                JSON Schema for structured output
+  --max-budget-usd <amount>             Maximum dollar amount to spend on API
+  --output-format <format>              Output format (only works with --print):
+  -p, --print                           Print response and exit (useful for
+                                        --output-format=stream-json)
+                                        --append-system-prompt included — sent,
+
+# codex exec --help (발췌)
+  -c, --config <key=value>
+  -i, --image <FILE>...
+      --dangerously-bypass-approvals-and-sandbox
+  -C, --cd <DIR>
+      --skip-git-repo-check
+      --ephemeral
+      --ignore-user-config
+      --output-schema <FILE>
+      --json
+  -o, --output-last-message <FILE>

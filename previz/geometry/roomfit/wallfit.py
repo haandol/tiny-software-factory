@@ -18,8 +18,8 @@ REFINE_TOP = 3                            # 격자 맞추기에서 경계를 가
 
 
 def calibrate(analyses: list[dict], W: int, H: int, img: np.ndarray, E: EdgeImage | None = None,
-              log=None) -> FitResult | None:
-    """사진 경계로 카메라와 방을 푼다.
+              log=None, drop: frozenset = frozenset()) -> FitResult | None:
+    """사진 경계로 카메라와 방을 푼다. drop에 든 관측(모서리 이름)은 쓰지 않는다.
 
     1) 관측을 모델과 무관하게 한 번 정한다: Codex 벽 선 둘레(±22픽셀)의 실제 경계, 그 선들의 교점 둘레의 벽 모서리
        세로선, 표본 과반이 찾은 물체의 옆선.
@@ -39,7 +39,8 @@ def calibrate(analyses: list[dict], W: int, H: int, img: np.ndarray, E: EdgeImag
         return None
     prior = prior_from(med)
     lines = pooled_codex_lines(analyses)
-    first = first_observations(E, model, med, analyses, lines, boxes, objects)
+    first = {k: v for k, v in first_observations(E, model, med, analyses, lines, boxes, objects).items()
+             if k not in drop}
     if not any(not k.startswith("vertical") for k in first):
         return None
     best = _search(model, med, lines, first, prior)

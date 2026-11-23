@@ -136,16 +136,35 @@ def find_corners(E: EdgeImage, model: RoomModel, x: np.ndarray, first: dict, lin
     return out
 
 
-def _object_side(E: EdgeImage, model: RoomModel, x: np.ndarray, u: float, y0: float, y1: float, radius: float,
-                 nearer: list) -> Segment | None:
-    """bbox 옆변 u의 y0~y1 구간을 지나는 연직선 둘레에서 찾은 경계."""
-    m = np.array([u, (y0 + y1) / 2])
-    ln = model.vertical_line(x, m)
+def _side_anchor(model: RoomModel, x: np.ndarray, box: tuple, left: bool) -> np.ndarray | None:
+    """옆선이 bbox 옆변에 닿는 점. 연직선이 화면에서 기울어 있으면(롤, 피치) 옆선은 bbox 옆변에 한쪽 끝(위나 아래)에서만
+    닿으므로, 그 끝 모서리를 돌려준다. 방향을 모르면 None."""
+    L, T, R, B = box
+    u = L if left else R
+    ln = model.vertical_line(x, np.array([u, (T + B) / 2]))
     if ln is None:
         return None
     n, _ = ln
     t = np.array([n[1], -n[0]])
-    half = (y1 - y0) / 2 / max(abs(t[1]), 0.5)
+    if abs(t[1]) < 1e-6:
+        return None
+    lean = t[0] / t[1]                      # 아래로 1픽셀 갈 때 옆으로 가는 양
+    at_top = (lean > 0) == left             # 왼쪽 옆선은 x가 가장 작은 끝, 오른쪽 옆선은 가장 큰 끝에서 닿는다
+    return np.array([u, T if at_top else B])
+
+
+def _object_side(E: EdgeImage, model: RoomModel, x: np.ndarray, anchor: np.ndarray, y0: float, y1: float,
+                 radius: float, nearer: list) -> Segment | None:
+    """옆선이 닿는 점 anchor를 지나는 연직선의 y0~y1 구간 둘레에서 찾은 경계."""
+    ln = model.vertical_line(x, anchor)
+    if ln is None:
+        return None
+    n, _ = ln
+    t = np.array([n[1], -n[0]])
+    if abs(t[1]) < 0.5:
+        return None
+    m = anchor + t * (((y0 + y1) / 2 - anchor[1]) / t[1])
+    half = (y1 - y0) / 2 / abs(t[1])
     return snap(E, m - half * t, m + half * t, radius, nearer, max_tilt=6.0)
 
 
@@ -153,16 +172,18 @@ def object_verticals(E: EdgeImage, model: RoomModel, x: np.ndarray, objects: lis
     """물체(원기둥 실루엣, 상자 모서리)의 왼쪽·오른쪽 옆선. 3D에서 연직이므로 연직 소실점을 지난다.
     가까운 물체(bbox 아래가 더 낮은 것)에 가린 곳은 재지 않는다. 화면 가장자리에 붙은 옆변은 쓰지 않는다."""
     out = []
-    for i, (L, T, R, B) in enumerate(objects):
+    for i, box in enumerate(objects):
+        L, T, R, B = box
         h = B - T
         if h < 40 or R - L < 8:
             continue
         nearer = [padded(o) for j, o in enumerate(objects) if j != i and o[3] > B + 2]
         y0, y1 = T + VERT_TRIM * h, B - VERT_TRIM * h
-        for u in (L, R):
+        for left, u in ((True, L), (False, R)):
             if u < 4 or u > model.W - 4:
                 continue
-            s = _object_side(E, model, x, u, y0, y1, radius, nearer)
+            anchor = _side_anchor(model, x, box, left)
+            s = None if anchor is None else _object_side(E, model, x, anchor, y0, y1, radius, nearer)
             if accepted(s, min_support=0.5, min_length=0.4 * h):
                 out.append(s)
     return out

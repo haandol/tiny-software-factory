@@ -12,7 +12,7 @@ from .camera import Cam
 from .colors import LIGHT_AMBIENT, LIGHT_INTENSITY, surface_colors
 from .objects import fit_object
 from .room import solve_room
-from .values import to_float, to_hex
+from .values import clamp, to_float, to_hex
 
 MAX_OBJECTS = 16
 DEFAULT_SUN = (0.3, 1.0, 0.4)
@@ -61,8 +61,19 @@ def camera_spec(cam: Cam, W: int, H: int) -> dict:
             "target": [0.0, cam.h + 5 * math.sin(p), -5 * math.cos(p)], "roll_deg": cam.roll}
 
 
-def build_spec(a: dict, W: int, H: int, img: np.ndarray | None = None) -> dict:
-    cam, cam_info = solve_camera(a, W, H)
+def fixed_camera(a: dict, W: int, H: int, camera: dict) -> tuple[Cam, dict]:
+    """사진으로 맞춘 카메라(화각·피치·롤, previz/geometry/roomfit/)를 이 측정값의 카메라 높이로 쓴다."""
+    height = clamp(to_float((a.get("camera") or {}).get("height_m"), 1.5), 0.3, 5.0)
+    vfov = clamp(float(camera["vfov"]), 15.0, 120.0)
+    pitch, roll = clamp(float(camera["pitch"]), -60.0, 45.0), clamp(float(camera["roll"]), -30.0, 30.0)
+    info = {"vfov": vfov, "pitch": pitch, "roll": roll, "source": camera.get("source", "image"),
+            **{k: v for k, v in camera.items() if k not in ("vfov", "pitch", "roll", "source")}}
+    return Cam(W, H, vfov, pitch, roll, height), info
+
+
+def build_spec(a: dict, W: int, H: int, img: np.ndarray | None = None, camera: dict | None = None) -> dict:
+    """camera(화각·피치·롤)가 있으면 그 카메라를 쓰고, 없으면 이 측정값 하나로 카메라를 보정한다."""
+    cam, cam_info = fixed_camera(a, W, H, camera) if camera else solve_camera(a, W, H)
     objects = fit_objects(a, cam)
     room = solve_room(a, cam, objects)
     sun = sun_direction(a)

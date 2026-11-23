@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .camera import Cam, horizon_ends, prior_camera
+from .camera import Cam, horizon_ends, horizon_row, prior_camera
 from .lm import best_of
 from .values import NAN, clamp, points, to_float
 
@@ -107,7 +107,7 @@ class CameraFit:
         cam = self.cam(x)
         r = [(x[0] - self.fov) / SIG_FOV, (x[2] - self.roll) / SIG_ROLL]
         if self.horizon_v is not None:
-            vh = self.H / 2 + cam.f * math.tan(math.radians(x[1])) / math.cos(math.radians(x[2]))
+            vh = horizon_row(self.H, cam.f, x[1], x[2])
             r.append((vh - self.horizon_v) / SIG_HORIZON_PX)
         if math.isfinite(self.pitch):
             r.append((x[1] - self.pitch) / SIG_PITCH)

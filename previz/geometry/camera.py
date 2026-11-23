@@ -43,6 +43,11 @@ class Cam:
         return p
 
 
+def horizon_row(H: int, f: float, pitch_deg: float, roll_deg: float) -> float:
+    """피치·롤 카메라(초점거리 f 픽셀)에서 지평선이 화면 가운데 열을 지나는 높이 (픽셀)."""
+    return H / 2 + f * math.tan(math.radians(pitch_deg)) / math.cos(math.radians(roll_deg))
+
+
 def horizon_ends(c: dict) -> tuple[float, float]:
     """Codex가 잰 지평선의 왼쪽·오른쪽 끝 y (없으면 nan)."""
     return to_float(c.get("horizon_y_at_left"), NAN), to_float(c.get("horizon_y_at_right"), NAN)

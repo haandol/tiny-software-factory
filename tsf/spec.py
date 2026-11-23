@@ -74,7 +74,8 @@ def check_metrics(metrics: list[dict], source: str) -> dict[str, dict]:
             raise SpecError(f"{m['metric']}의 방향은 '{op}'여야 한다 (받은 값 '{m['op']}')")
         if m["quote"] not in source or not any(abs(n - m["value"]) < 1e-9 for n in _numbers(m["quote"])):
             raise SpecError(f"{m['metric']} 목표 {m['value']}가 이슈 원문에 없다 (인용: {m['quote'][:80]})")
-        suites.setdefault(m["suite"], {})[m["metric"]] = f"{op} {m['value']:g}"
+        suite = "holdout" if m["metric"].startswith("stability.") else m["suite"]   # 안정성 지표는 홀드아웃에만 있다
+        suites.setdefault(suite, {})[m["metric"]] = f"{op} {m['value']:g}"
     return suites
 
 

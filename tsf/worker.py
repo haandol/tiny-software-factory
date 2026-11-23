@@ -233,7 +233,8 @@ def evaluate_stage(run: Run, label: str, lab: Lab) -> dict:
         run.say(f"  {'통과' if c['ok'] else '실패'}  {c['name']}: {c['detail']}")
     return {"eval_dir": str(eval_dir), "verdict": verdict, "score": scores(candidate, baseline),
             "code": (candidate or {}).get("code"),
-            "codex_calls": sum(len(s["fixtures"]) for s in (candidate, baseline) if s),
+            "codex_calls": sum(len(s["fixtures"]) + sum(1 for f in s["fixtures"] if f.get("repeat"))
+                               for s in (candidate, baseline) if s),   # 앱 요청 수 (앱 안의 Codex 호출은 앱이 정한다)
             "generation_seconds": [r["seconds"] for s in (candidate, baseline) if s
                                    for r in s["fixtures"] if r.get("seconds") is not None],
             "_candidate": candidate, "_baseline": baseline}

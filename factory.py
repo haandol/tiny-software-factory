@@ -13,6 +13,7 @@
   2     run                          작업 명세 하나를 구현·평가·병합           tsf/worker.py, tsf/delivery.py
   3     metrics, refactor            코드 지표, 리팩터링 단계 (run에도 포함)   tsf/oracle/code.py, tsf/refactor.py
   4     up                           Linear를 제어판으로 상주 실행             tsf/pipeline.py, tsf/spec.py, tsf/eval_change.py
+  5     discover (+ up)              발견 루프: 목표 미달 지표 → 다음 이슈      tsf/discovery.py
 """
 
 from __future__ import annotations
@@ -84,6 +85,17 @@ def cmd_up(args):
     up(once=args.once, interval=args.interval)
 
 
+def cmd_discover(args):
+    from tsf.discovery import discover
+    from tsf.oracle import Lab
+    lab = Lab()
+    try:
+        created = discover(lab, force=args.force)
+    finally:
+        lab.close()
+    print(f"만든 이슈: {', '.join(c['identifier'] for c in created) or '없음'}")
+
+
 def cmd_metrics(args):
     from tsf.oracle import CODE_TARGETS, measure_code
     m = measure_code(Path(args.dir).resolve())
@@ -121,13 +133,15 @@ def main() -> int:
     p = sub.add_parser("up", help="Linear를 폴링하며 factory·factory-eval 이슈를 처리한다 (상주)")
     p.add_argument("--once", action="store_true", help="대기열이 비면 끝낸다")
     p.add_argument("--interval", type=int, default=30, help="폴링 간격(초)")
+    p = sub.add_parser("discover", help="발견 루프 한 번: main을 평가해 최종 목표 미달 지표를 Linear 이슈로 만든다")
+    p.add_argument("--force", action="store_true", help="같은 main 커밋이어도 다시 평가한다")
     p = sub.add_parser("metrics", help="폴더의 Python 코드 지표 (파일·함수 길이, 분기 복잡도)")
     p.add_argument("dir", nargs="?", default=str(PRODUCT))
     p.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
     handlers = {"init": cmd_init, "doctor": cmd_doctor, "linear-setup": cmd_linear_setup, "eval": cmd_eval,
-                "calibrate": cmd_calibrate, "run": cmd_run, "refactor": cmd_refactor, "up": cmd_up,
+                "calibrate": cmd_calibrate, "run": cmd_run, "refactor": cmd_refactor, "up": cmd_up, "discover": cmd_discover,
                 "metrics": cmd_metrics}
     return handlers[args.command](args) or 0
 

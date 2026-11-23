@@ -1,6 +1,7 @@
-"""4단계: Linear를 제어판으로 쓰는 상주 실행 (factory.py up).
+"""4단계: Linear를 제어판으로 쓰는 상주 실행 (factory.py up). 5단계부터 대기열이 비면 발견 루프가 돈다.
 
 틱마다: 일시 정지 확인 → 취소된 이슈의 작업 공간 정리 → Todo 이슈 하나 선점 → 작업 명세 → 실행 → 결과 보고.
+대기열이 비면: 발견 루프가 main을 평가해 최종 목표 미달 지표를 이슈로 만든다 (main 커밋마다 한 번).
 상태의 원본은 Linear다. 로컬에는 실행 기록 파일만 있다 (Symphony SPEC §14.3과 같은 복구 방식).
   Todo         factory 또는 factory-eval 라벨이 붙으면 대기열
   In Progress  팩토리가 선점해 실행 중 (재시작하면 Todo로 되돌린다)
@@ -22,6 +23,7 @@ import yaml
 
 from . import linear
 from .config import PRODUCT, ROOT, RUNS, VAR, WORKTREES
+from .discovery import discover
 from .env import git
 from .eval_change import EVAL_WORKTREES, run_eval_change
 from .linear import NEEDS_HUMAN
@@ -34,6 +36,7 @@ LABEL_TARGETS = {"factory-eval": "eval", "factory": "product"}   # 앞의 것이
 DAILY_BUDGET_USD = 50
 MAX_CONSECUTIVE_NEEDS_HUMAN = 3
 PAUSE_FILE = VAR / "pause.json"
+PAUSE_ACK = VAR / "pause-ack.json"       # 사람이 일시 정지 이슈를 Done으로 옮긴 기록
 
 
 # --- 대기열 -------------------------------------------------------------------------
@@ -77,10 +80,12 @@ def recent_runs() -> list[dict]:
 def pause_reason() -> str | None:
     runs = recent_runs()
     today = datetime.now().date().isoformat()
+    ack = json.loads(PAUSE_ACK.read_text()) if PAUSE_ACK.exists() else {}
     spent = sum(r.get("cost_usd") or 0 for r in runs if r.get("started", "").startswith(today))
-    if spent >= DAILY_BUDGET_USD:
+    if spent >= DAILY_BUDGET_USD and ack.get("budget_date") != today:
         return f"오늘 Claude Code 비용 ${spent:.2f}가 하루 상한 ${DAILY_BUDGET_USD}에 닿았다"
-    tail = [r["status"] for r in runs if r.get("status") in ("done", "needs_human")][-MAX_CONSECUTIVE_NEEDS_HUMAN:]
+    finished = [r for r in runs if r.get("status") in ("done", "needs_human")]
+    tail = [r["status"] for r in finished[ack.get("runs_seen", 0):]][-MAX_CONSECUTIVE_NEEDS_HUMAN:]
     if len(tail) == MAX_CONSECUTIVE_NEEDS_HUMAN and all(s == "needs_human" for s in tail):
         return f"Needs Human이 연속 {MAX_CONSECUTIVE_NEEDS_HUMAN}건이다. eval 결함이나 실행 환경 문제일 수 있다"
     return None
@@ -93,7 +98,10 @@ def paused() -> bool:
         issue = linear.fetch_issue(pause["id"])
         if issue and issue["state"] == "Done":
             PAUSE_FILE.unlink()
-            print(f"일시 정지 해제 ({pause['identifier']})")
+            finished = [r for r in recent_runs() if r.get("status") in ("done", "needs_human")]
+            PAUSE_ACK.write_text(json.dumps({"budget_date": datetime.now().date().isoformat(),
+                                             "runs_seen": len(finished), "resolved": pause["identifier"]}))
+            print(f"일시 정지 해제 ({pause['identifier']}): 오늘은 비용 상한으로 다시 멈추지 않는다")
             return False
         return True
     reason = pause_reason()
@@ -223,6 +231,8 @@ def up(once: bool = False, interval: int = POLL_S) -> None:
             except Exception as e:  # 트래커 오류는 이번 틱만 건너뛴다 (Symphony SPEC §11.4)
                 print(f"Linear 조회 실패, 다음 틱에 다시 시도: {e}")
                 issue = None
+            if issue is None and not paused() and discover(lab):   # 대기열이 비면 발견 루프가 다음 일을 찾는다
+                continue
             if issue is None:
                 if once:
                     return

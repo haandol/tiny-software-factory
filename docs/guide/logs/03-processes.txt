@@ -1,0 +1,13 @@
+# 평가 중 앱 프로세스 그룹에서 관찰한 명령 (GPT-6.1-Sol 전환 직후, codex exec 방식)
+  codex exec --skip-git-repo-check --ephemeral --color
+  git -c safe.bareRepository=explicit ls-remote https://github.com/openai/plugins.git
+  git remote-https https://github.com/openai/plugins.git https://github.com/openai/plugins.git
+  git-remote-https https://github.com/openai/plugins.git https://github.com/openai/plugins.git
+  python app.py --port 53631 --data-dir
+  uv run app.py --port 53631
+
+# 제품 전용 Codex 설정에서 plugins, remote_plugin, plugin_sharing, apps, browser_use, hooks를 끈 뒤
+  aws configure export-credentials --profile other-profile
+  codex exec --skip-git-repo-check --ephemeral -C
+  node .../bin/codex exec --skip-git-repo-check --ephemeral
+  sh -c /usr/local/bin/aws configure export-credentials --profile other-profile --format process

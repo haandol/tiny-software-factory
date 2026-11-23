@@ -14,6 +14,7 @@ from ..config import EVALS, ROOT
 from .apps import AppHandle, http
 from .code import measure_code
 from .lab import Lab
+from .processes import process_group_commands
 from .policy import HOLDOUT_COUNT, IMAGE_H, IMAGE_W, PUBLIC_SEEDS, REQUEST_TIMEOUT_S, WORST_METRICS
 from .scenes import generate_scene
 from .scoring import compare, score_metrics
@@ -85,9 +86,11 @@ def _submit(app: AppHandle, fixtures: list[Fixture], smoke: Violations) -> dict:
     return submitted
 
 
-def _wait(app: AppHandle, submitted: dict, smoke: Violations, interval: float) -> None:
+def _wait(app: AppHandle, submitted: dict, smoke: Violations, interval: float, seen: set[str]) -> None:
     deadline = time.time() + REQUEST_TIMEOUT_S
     while time.time() < deadline and any(s["status"] == "pending" for s in submitted.values()):
+        if app.pid:  # 앱이 띄운 하위 프로세스를 기록한다 (런타임 요구사항 확인용)
+            seen |= process_group_commands(app.pid)
         for fx_id, s in submitted.items():
             if s["status"] != "pending":
                 continue
@@ -145,8 +148,11 @@ def run_eval(app: AppHandle, fixtures: list[Fixture], out_dir: Path, lab: Lab, r
     out_dir.mkdir(parents=True, exist_ok=True)
     smoke = Violations()
     _prepare(fixtures, out_dir, lab, registry)
+    seen: set[str] = set()
+    if app.pid:
+        seen |= process_group_commands(app.pid)
     submitted = _submit(app, fixtures, smoke)
-    _wait(app, submitted, smoke, interval=0.5 if registry is not None else 2)
+    _wait(app, submitted, smoke, interval=0.5 if registry is not None else 2, seen=seen)
     results = [_measure(app, fx, submitted[fx.id], out_dir, lab, smoke) for fx in fixtures]
     if not any(r["status"] == "done" for r in results):
         smoke.add("done", "done이 된 요청이 하나도 없다")
@@ -154,6 +160,8 @@ def run_eval(app: AppHandle, fixtures: list[Fixture], out_dir: Path, lab: Lab, r
     summary["smoke"] = {"passed": not smoke, "violations": dict(smoke)}
     if app.source_dir:
         summary["code"] = measure_code(app.source_dir)
+    if app.pid:
+        summary["processes"] = sorted(seen)
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False))
     try:  # 사람이 한눈에 볼 수 있는 평가 시트. 실패해도 평가 결과에는 영향이 없다
         lab.screenshot_html(eval_sheet_html(summary, out_dir, out_dir.name), out_dir / "sheet.png")

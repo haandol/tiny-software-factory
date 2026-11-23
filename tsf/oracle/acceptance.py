@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .policy import REGRESSION_TOLERANCE
+from .processes import matches
 
 
 def parse_threshold(expr: str) -> tuple[str, float]:
@@ -69,6 +70,20 @@ def _suite(v: Verdict, raw: dict, candidate: dict | None) -> None:
                                "worst_fixtures": _worst(candidate, suite, metric, op)})
 
 
+def _process(v: Verdict, raw: dict, candidate: dict | None) -> None:
+    """평가 중에 앱이 띄운 프로세스로 런타임 요구사항을 확인한다."""
+    seen = (candidate or {}).get("processes")
+    if seen is None:
+        return v.cond(f"process:{raw['process']}", False, "앱 프로세스를 관찰하지 못했다")
+    present = matches(seen, raw["process"])
+    v.cond(f"process:{raw['process']}", present, "평가 중에 실행됐다" if present else
+           f"평가 중에 실행되지 않았다 (관찰한 명령: {', '.join(seen)[:300]})")
+    if raw.get("absent"):
+        absent = not matches(seen, raw["absent"])
+        hit = [c for c in seen if matches([c], raw["absent"])]
+        v.cond(f"absent:{raw['absent']}", absent, "실행되지 않았다" if absent else f"실행됐다: {hit[0][:200]}")
+
+
 def judge(item: dict, candidate: dict | None, baseline: dict | None, start_error: str | None) -> dict:
     v = Verdict()
     for raw in item["acceptance"]:
@@ -80,6 +95,8 @@ def judge(item: dict, candidate: dict | None, baseline: dict | None, start_error
             _regression(v, candidate, baseline)
         elif isinstance(raw, dict) and "suite" in raw:
             _suite(v, raw, candidate)
+        elif isinstance(raw, dict) and "process" in raw:
+            _process(v, raw, candidate)
         else:
             raise RuntimeError(f"알 수 없는 수용 조건: {raw}")
     return v.as_dict()

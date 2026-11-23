@@ -15,6 +15,9 @@ WORKTREES = VAR / "worktrees"
 RUNS = VAR / "runs"
 EVALS = VAR / "evals"
 
+# 제품이 Codex app-server로 부르는 모델. 사용자가 정한 값이다 (Bedrock 카탈로그의 slug).
+CODEX_MODEL = "us.openai.gpt-6.1-sol"
+
 THREE_VERSION = "0.187.0"
 THREE_FILES = ["build/three.module.js", "build/three.core.js", "LICENSE"]
 

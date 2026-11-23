@@ -27,7 +27,7 @@ uv run factory.py refactor                # 병합된 main에 리팩터링 단�
 - `factory.py`: 진입점 (명령 → `tsf/` 모듈)
 - `tsf/`: 팩토리 구현. `tsf/oracle/`은 평가 자산이라 `factory-eval` 이슈로만 바뀐다
 - `harness/v1/`: 에이전트 지시문
-- `CONTRACT.md`: 평가기가 제품을 관찰하는 계약
+- `CONTRACT.md`: 평가기가 제품을 관찰하는 계약 (Codex는 `codex app-server`, 모델 `us.openai.gpt-6.1-sol`)
 - `product/`: 팩토리가 만드는 제품 (별도 git 저장소)
 
 ## 진행 상황

@@ -13,6 +13,8 @@ uv run app.py --port <port> --data-dir <dir>
 - 평가기는 `app.py`가 있는 폴더에서 이 명령을 실행하고, 포트가 열릴 때까지 최대 180초 기다린다.
 - 의존성이 필요하면 `app.py` 머리의 인라인 메타데이터(PEP 723)로 선언한다.
 - 평가기는 환경 변수 `CODEX_HOME`(제품 전용 Codex 설정)과 `AWS_PROFILE=default`를 넘긴다. Codex를 부를 때는 이 환경을 그대로 쓴다.
+- Codex는 `codex app-server`(표준 입출력 JSON-RPC)로 부르고, 앱과 같은 프로세스 그룹에서 실행한다. 모델은 `CODEX_HOME` 설정(`us.openai.gpt-6.1-sol`)을 따른다.
+  평가기는 평가하는 동안 앱의 프로세스 그룹을 관찰하고, 작업 명세에 `process` 조건이 있으면 그 결과로 판정한다.
 
 ## 2. HTTP
 

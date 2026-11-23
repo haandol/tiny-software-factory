@@ -9,9 +9,9 @@
   의존성은 app.py 머리의 PEP 723 인라인 메타데이터로 선언한다.
 - 처음에는 app.py 단일 파일로 시작해도 된다. 이미 모듈로 나뉘어 있으면 그 구조를 따른다.
   구조 정리(모듈 분리)는 병합 전 리팩터링 단계가 맡으므로, 구현 단계는 동작에 집중한다.
-- 3D 장면 생성은 app.py가 Codex를 헤드리스로 호출해서 한다 (`codex exec`, 이미지는 `-i`).
+- 3D 장면 생성은 앱이 Codex를 헤드리스로 호출해서 한다. 호출 방식은 `codex app-server`(표준 입출력 JSON-RPC)다.
   평가기가 CODEX_HOME, AWS_PROFILE 등 환경 변수를 넘기므로 os.environ을 그대로 자식 프로세스에 넘긴다.
-  CODEX_HOME의 설정 파일은 고치지 않는다.
+  모델은 CODEX_HOME 설정을 따르고 코드에서 지정하지 않는다. CODEX_HOME의 설정 파일은 고치지 않는다.
 - three.js는 .factory/vendor/의 사본(three.module.js, three.core.js)을 저장소에 복사해 쓴다. 외부 CDN은 막혀 있다.
 - 평가기는 정답이 공개된 공개 세트(.factory/fixtures/) 외에, 매번 새로 뽑는 비공개 홀드아웃 장면
   (그림자, 질감·이미지 노이즈 포함)으로도 채점한다. 공개 세트의 정답을 코드에 넣지 않는다.

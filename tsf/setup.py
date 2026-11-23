@@ -14,7 +14,7 @@ import tomllib
 import urllib.request
 from pathlib import Path
 
-from .config import CODEX_HOME, FACTORY_GIT_IDENTITY, PRODUCT, ROOT, RUNS, THREE_FILES, THREE_VERSION, VAR, VENDOR, WORKTREES
+from .config import CODEX_HOME, CODEX_MODEL, FACTORY_GIT_IDENTITY, PRODUCT, ROOT, RUNS, THREE_FILES, THREE_VERSION, VAR, VENDOR, WORKTREES
 from .env import agent_env, aws_default_region
 from .linear import check_team
 from .oracle.policy import CHROMIUM_ARGS
@@ -44,6 +44,9 @@ def write_toml(data: dict, prefix: str = "") -> str:
     return out
 
 
+DISABLED_CODEX_FEATURES = ["plugins", "remote_plugin", "plugin_sharing", "apps", "browser_use", "hooks"]
+
+
 def init_codex_home() -> Path:
     """사용자 Codex 설정에서 Bedrock 공급자와 모델만 옮긴 전용 설정을 만든다.
 
@@ -60,6 +63,10 @@ def init_codex_home() -> Path:
             conf["aws"]["profile"] = "default"
     if providers:
         keep["model_providers"] = providers
+    keep["model"] = CODEX_MODEL                   # 제품 런타임 모델은 팩토리가 정한다
+    # 제품 런타임에 필요 없는 기능은 끈다. 켜 두면 Codex가 실행마다 GitHub에서 플러그인 목록을 받아 온다
+    # (3단계 평가 중 프로세스 관찰로 발견: git ls-remote https://github.com/openai/plugins.git).
+    keep["features"] = {name: False for name in DISABLED_CODEX_FEATURES}
     CODEX_HOME.mkdir(parents=True, exist_ok=True)
     header = "# factory.py init이 만든 제품 전용 Codex 설정. 직접 고치지 않는다.\n\n"
     (CODEX_HOME / "config.toml").write_text(header + write_toml(keep))
@@ -165,22 +172,19 @@ def check_claude() -> str:
 
 
 def check_codex() -> str:
-    """제품과 같은 방식(전용 CODEX_HOME, 헤드리스)으로 Codex를 한 번 부른다."""
+    """제품과 같은 방식(전용 CODEX_HOME, codex app-server JSON-RPC)으로 Codex를 한 번 부른다."""
+    from .codex import AppServer
     if not (CODEX_HOME / "config.toml").exists():
         raise RuntimeError("var/codex-home이 없다 (먼저 init)")
-    with tempfile.TemporaryDirectory() as tmp:
-        out = subprocess.run(
-            ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--json", "-C", tmp,
-             "Reply with exactly the word PONG."],
-            env=agent_env(CODEX_HOME=str(CODEX_HOME)), capture_output=True, text=True, timeout=300)
-    events = [json.loads(l) for l in out.stdout.splitlines() if l.startswith("{")]
-    text = " ".join(e.get("item", {}).get("text", "") for e in events if e.get("type") == "item.completed")
-    usage = next((e.get("usage") for e in events if e.get("type") == "turn.completed"), None)
-    if out.returncode != 0 or "PONG" not in text:
-        raise RuntimeError(f"응답 이상: {(out.stderr or out.stdout).strip()[-300:]}")
-    model = tomllib.loads((CODEX_HOME / "config.toml").read_text()).get("model")
-    record_doctor("codex", {"model": model, "usage": usage})
-    return f"model={model} usage={usage}"
+    with tempfile.TemporaryDirectory() as tmp, AppServer(agent_env(CODEX_HOME=str(CODEX_HOME))) as server:
+        thread = server.request("thread/start", {"cwd": tmp, "ephemeral": True})
+        answer, usage, seconds = server.run_turn(thread["thread"]["id"],
+                                                 [{"type": "text", "text": "Reply with exactly the word PONG."}])
+    if "PONG" not in answer:
+        raise RuntimeError(f"응답 이상: {answer[:200]}")
+    model = thread.get("model") or tomllib.loads((CODEX_HOME / "config.toml").read_text()).get("model")
+    record_doctor("codex", {"mode": "app-server", "model": model, "seconds": seconds, "usage": usage})
+    return f"app-server, model={model}, {seconds}초, 입력 토큰 {usage.get('inputTokens') if usage else '?'}"
 
 
 def doctor(skip_agents: bool = False) -> bool:

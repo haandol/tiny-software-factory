@@ -12,3 +12,4 @@ reports/**/*.html
 
 __pycache__/
 vendor/
+docs/guide/guide.html

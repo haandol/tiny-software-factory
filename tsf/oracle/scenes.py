@@ -98,6 +98,41 @@ def _screen_rect(ob: dict, view: dict) -> tuple[int, int, int, int]:
     return max(0, math.floor(i0)), min(w - 1, math.ceil(i1)), max(0, math.floor(j0)), min(h - 1, math.ceil(j1))
 
 
+def _grid_rays(rects: list[tuple[int, int, int, int]], view: dict):
+    """화면 사각형 rects 중 하나에라도 드는 광선 격자 칸마다 (광선 방향, 그 칸이 드는 물체 번호들)을 낸다.
+
+    칸은 행(j) → 열(i) 순서로, 물체 번호는 오름차순으로 낸다.
+    """
+    w, h = VIS_GRID
+    f, r, u = view["forward"], view["right"], view["up"]
+    rx, ry, rz = (x * view["tan_h"] for x in r)
+    ux, uy, uz = (x * view["tan_v"] for x in u)
+    for j in range(min(rc[2] for rc in rects), max(rc[3] for rc in rects) + 1):
+        ny = 1 - (j + 0.5) * 2 / h
+        rows = [k for k, rc in enumerate(rects) if rc[2] <= j <= rc[3]]
+        if not rows:
+            continue
+        for i in range(min(rects[k][0] for k in rows), max(rects[k][1] for k in rows) + 1):
+            nx = (i + 0.5) * 2 / w - 1
+            d = [f[0] + nx * rx + ny * ux, f[1] + nx * ry + ny * uy, f[2] + nx * rz + ny * uz]
+            yield d, [k for k in rows if rects[k][0] <= i <= rects[k][1]]
+
+
+def _ray_hits(cam: list, d: list, ks: list[int], objects: list[dict], hits: list) -> tuple[list[int], int]:
+    """광선 cam + t·d가 물체 ks 중 닿는 물체 번호들과 그중 가장 가까운 물체 번호 (아무것도 안 닿으면 -1).
+
+    거리가 같으면 번호가 작은 물체를 가장 가깝다고 본다.
+    """
+    hit, nearest, best = [], -1, math.inf
+    for k in ks:
+        t = hits[k](cam, d, objects[k])
+        if t is not None:
+            hit.append(k)
+            if t < best:
+                nearest, best = k, t
+    return hit, nearest
+
+
 def visible_fractions(objects: list[dict], view: dict) -> list[float]:
     """물체마다 입력 이미지 안의 실루엣 중 다른 물체에 가려지지 않은 비율 (0~1).
 
@@ -107,32 +142,15 @@ def visible_fractions(objects: list[dict], view: dict) -> list[float]:
     n = len(objects)
     if n <= 1:
         return [1.0] * n
-    w, h = VIS_GRID
-    cam, f, r, u = view["position"], view["forward"], view["right"], view["up"]
-    rx, ry, rz = (x * view["tan_h"] for x in r)
-    ux, uy, uz = (x * view["tan_v"] for x in u)
     rects = [_screen_rect(ob, view) for ob in objects]
     hits = [_hit_box if ob["shape"] == "box" else _hit_cylinder for ob in objects]
     covered, front = [0] * n, [0] * n
-    for j in range(min(rc[2] for rc in rects), max(rc[3] for rc in rects) + 1):
-        ny = 1 - (j + 0.5) * 2 / h
-        rows = [k for k, rc in enumerate(rects) if rc[2] <= j <= rc[3]]
-        if not rows:
-            continue
-        for i in range(min(rects[k][0] for k in rows), max(rects[k][1] for k in rows) + 1):
-            nx = (i + 0.5) * 2 / w - 1
-            d = [f[0] + nx * rx + ny * ux, f[1] + nx * ry + ny * uy, f[2] + nx * rz + ny * uz]
-            nearest, best = -1, math.inf
-            for k in rows:
-                if not rects[k][0] <= i <= rects[k][1]:
-                    continue
-                t = hits[k](cam, d, objects[k])
-                if t is not None:
-                    covered[k] += 1
-                    if t < best:
-                        nearest, best = k, t
-            if nearest >= 0:
-                front[nearest] += 1
+    for d, ks in _grid_rays(rects, view):
+        hit, nearest = _ray_hits(view["position"], d, ks, objects, hits)
+        for k in hit:
+            covered[k] += 1
+        if nearest >= 0:
+            front[nearest] += 1
     return [front[k] / covered[k] if covered[k] else 0.0 for k in range(n)]
 
 

@@ -7,8 +7,6 @@ var/
 # 제품 저장소는 별도 git 저장소다
 product/
 
-# 렌더링된 HTML 리포트는 크다 (report.json/report.md만 추적)
-reports/**/*.html
 
 __pycache__/
 vendor/

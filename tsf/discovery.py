@@ -148,26 +148,15 @@ def evaluate_main(lab: Lab, commit: str) -> tuple[dict, object]:
         app.stop()
 
 
-def discover(lab: Lab, force: bool = False, log=print) -> list[dict]:
-    """main을 평가해 목표 미달 지표를 이슈로 만든다. 만든 이슈 목록을 돌려준다."""
-    if not (PRODUCT / "app.py").exists():
-        return []
-    commit = git("rev-parse", "--short", "HEAD", cwd=PRODUCT)
-    # 평가 기준이 바뀌어도(factory-eval 병합) 제품 커밋은 그대로이므로, 평가 자산의 커밋도 함께 본다
-    oracle = git("log", "-1", "--format=%h", "--", "tsf/oracle", "CONTRACT.md", cwd=ROOT)
+def _already_seen(commit: str, oracle: str) -> bool:
+    """같은 제품 main을 같은 평가 자산으로 이미 평가했는가."""
     state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
-    if state.get("commit") == commit and state.get("oracle") == oracle and not force:
-        return []
-    open_auto = [i for i in linear.fetch_issues(OPEN_STATES) if "auto-discovered" in i["labels"]]
-    if len(open_auto) >= MAX_OPEN_AUTO:
-        log(f"발견 루프: 열린 자동 이슈가 {len(open_auto)}개라 새로 만들지 않는다")
-        return []
-    log(f"발견 루프: main {commit} 평가")
-    summary, eval_dir = evaluate_main(lab, commit)
-    found, within = gaps(summary)
-    for g in within:
-        log(f"발견 루프: {g['suite']}:{g['metric']} {g['actual']:.2f}는 목표 {g['final']:g}와의 차이가 측정 잡음 "
-            f"{g['noise']:g} 안이라 건너뛴다")
+    return state.get("commit") == commit and state.get("oracle") == oracle
+
+
+def _create_issues(found: list[dict], open_auto: list[dict], summary: dict, commit: str, eval_dir,
+                   log) -> tuple[list[dict], list[str]]:
+    """미달 지표마다 이슈를 만든다. 한 번에 MAX_NEW_PER_RUN개, 열린 자동 이슈 MAX_OPEN_AUTO개까지. (만든 이슈, 중복으로 건너뛴 지표)"""
     created, skipped = [], []
     for gap in found:
         if len(created) >= MAX_NEW_PER_RUN or len(open_auto) + len(created) >= MAX_OPEN_AUTO:
@@ -182,6 +171,29 @@ def discover(lab: Lab, force: bool = False, log=print) -> list[dict]:
                                     labels=["factory", "auto-discovered"])
         created.append({**issue, "gap": gap, "observe_cost_usd": seen.get("cost_usd")})
         log(f"발견 루프: {issue['identifier']} 생성 — {title}")
+    return created, skipped
+
+
+def discover(lab: Lab, force: bool = False, log=print) -> list[dict]:
+    """main을 평가해 목표 미달 지표를 이슈로 만든다. 만든 이슈 목록을 돌려준다."""
+    if not (PRODUCT / "app.py").exists():
+        return []
+    commit = git("rev-parse", "--short", "HEAD", cwd=PRODUCT)
+    # 평가 기준이 바뀌어도(factory-eval 병합) 제품 커밋은 그대로이므로, 평가 자산의 커밋도 함께 본다
+    oracle = git("log", "-1", "--format=%h", "--", "tsf/oracle", "CONTRACT.md", cwd=ROOT)
+    if not force and _already_seen(commit, oracle):
+        return []
+    open_auto = [i for i in linear.fetch_issues(OPEN_STATES) if "auto-discovered" in i["labels"]]
+    if len(open_auto) >= MAX_OPEN_AUTO:
+        log(f"발견 루프: 열린 자동 이슈가 {len(open_auto)}개라 새로 만들지 않는다")
+        return []
+    log(f"발견 루프: main {commit} 평가")
+    summary, eval_dir = evaluate_main(lab, commit)
+    found, within = gaps(summary)
+    for g in within:
+        log(f"발견 루프: {g['suite']}:{g['metric']} {g['actual']:.2f}는 목표 {g['final']:g}와의 차이가 측정 잡음 "
+            f"{g['noise']:g} 안이라 건너뛴다")
+    created, skipped = _create_issues(found, open_auto, summary, commit, eval_dir, log)
     if not found and not within:
         log(f"발견 루프: main {commit}은 최종 목표를 모두 충족한다. 이슈를 만들지 않는다")
     STATE_FILE.write_text(json.dumps({"commit": commit, "oracle": oracle, "eval_dir": eval_dir.name, "at": datetime.now().isoformat(),

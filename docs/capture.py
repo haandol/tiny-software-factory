@@ -28,6 +28,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -150,60 +151,75 @@ LINEAR_CSS = """
 """
 
 
-def cmd_linear(args):
+LINEAR_NOTE = ('<div class="note">Linear GraphQL API로 읽은 실제 데이터를 그린 그림이다. '
+               'Linear 화면의 스크린샷이 아니다.</div>')
+ISSUE_QUERY = """query($id: String!) { issue(id: $id) {
+    identifier title description state { name } labels { nodes { name color } }
+    comments(first: 50) { nodes { body createdAt user { name } } }
+    history(first: 50) { nodes { createdAt toState { name } } } } }"""
+BOARD_QUERY = """query($teamId: ID!) { issues(first: 50, filter: { team: { id: { eq: $teamId } } },
+    orderBy: updatedAt) { nodes { identifier title state { name } labels { nodes { name color } } } } }"""
+BOARD_ORDER = ["Backlog", "Todo", "In Progress", "Needs Human", "In Review", "Done", "Canceled"]
+
+
+def _at(ts: str) -> datetime:
+    """Linear는 UTC로 준다. 로컬 시각으로 본다."""
+    return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
+
+
+def _label_spans(nodes: list[dict]) -> str:
+    return "".join(f'<span class="lb" style="background:{l["color"]}">{html.escape(l["name"])}</span>' for l in nodes)
+
+
+def _state_at(data: dict, cutoff: datetime | None) -> str:
+    """cutoff 시각의 상태. cutoff가 없거나 그때까지 상태 이동이 없으면 지금 상태."""
+    if not cutoff:
+        return data["state"]["name"]
+    moves = sorted((_at(h["createdAt"]), h["toState"]["name"]) for h in data["history"]["nodes"]
+                   if h["toState"] and _at(h["createdAt"]) <= cutoff)
+    return moves[-1][1] if moves else data["state"]["name"]
+
+
+def _comment_html(c: dict) -> str:
+    import markdown
+    body = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"`[첨부 이미지: \1]`", c["body"])
+    return (f'<div class="cm"><div class="who">{_at(c["createdAt"]).strftime("%Y-%m-%d %H:%M %Z")}</div>'
+            f'{markdown.markdown(body, extensions=["tables", "fenced_code"])}</div>')
+
+
+def issue_html(issue_id: str, as_of: str | None) -> str:
+    """이슈 하나. as_of가 있으면 그 시각까지의 상태와 댓글만 그린다 (캡처 뒤에 바뀐 이슈를 캡처 시점으로 다시 그린다)."""
+    import markdown
+    data = linear(ISSUE_QUERY, {"id": issue_id})["issue"]
+    cutoff = datetime.fromisoformat(as_of).astimezone() if as_of else None
+    comments = "".join(_comment_html(c) for c in sorted(data["comments"]["nodes"], key=lambda c: c["createdAt"])
+                       if not cutoff or _at(c["createdAt"]) <= cutoff)
+    return (f'<div class="wrap"><h1>Linear 이슈 {data["identifier"]}</h1><div class="issue">'
+            f'<b>{html.escape(data["title"])}</b> <span class="chip">{_state_at(data, cutoff)}</span>'
+            f'{_label_spans(data["labels"]["nodes"])}'
+            f'<div class="desc">{markdown.markdown(data["description"] or "", extensions=["tables"])}</div>'
+            f'{comments}</div>{LINEAR_NOTE}</div>')
+
+
+def board_html() -> str:
+    """팀의 이슈를 상태별 열로 놓은 보드."""
     team = linear_team(team_key())
-    note = ('<div class="note">Linear GraphQL API로 읽은 실제 데이터를 그린 그림이다. '
-            'Linear 화면의 스크린샷이 아니다.</div>')
-    if args.issue:
-        data = linear("""query($id: String!) { issue(id: $id) {
-            identifier title description state { name } labels { nodes { name color } }
-            comments(first: 50) { nodes { body createdAt user { name } } }
-            history(first: 50) { nodes { createdAt toState { name } } } } }""", {"id": args.issue})["issue"]
-        labels = "".join(f'<span class="lb" style="background:{l["color"]}">{html.escape(l["name"])}</span>'
-                         for l in data["labels"]["nodes"])
-        import markdown
-        from datetime import datetime
-
-        def at(ts):  # Linear는 UTC로 준다. 로컬 시각으로 본다
-            return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
-
-        # --as-of: 그 시각까지의 상태와 댓글만 그린다 (캡처 뒤에 이슈가 바뀌었을 때 캡처 시점을 다시 그린다)
-        cutoff = datetime.fromisoformat(args.as_of).astimezone() if args.as_of else None
-        state = data["state"]["name"]
-        if cutoff:
-            moves = sorted((at(h["createdAt"]), h["toState"]["name"]) for h in data["history"]["nodes"]
-                           if h["toState"] and at(h["createdAt"]) <= cutoff)
-            state = moves[-1][1] if moves else state
-        comments = "".join(
-            f'<div class="cm"><div class="who">{at(c["createdAt"]).strftime("%Y-%m-%d %H:%M %Z")}</div>'
-            f'{markdown.markdown(re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"`[첨부 이미지: \1]`", c["body"]), extensions=["tables", "fenced_code"])}</div>'
-            for c in sorted(data["comments"]["nodes"], key=lambda c: c["createdAt"])
-            if not cutoff or at(c["createdAt"]) <= cutoff)
-        body = (f'<div class="wrap"><h1>Linear 이슈 {data["identifier"]}</h1><div class="issue">'
-                f'<b>{html.escape(data["title"])}</b> <span class="chip">{state}</span>{labels}'
-                f'<div class="desc">{markdown.markdown(data["description"] or "", extensions=["tables"])}</div>'
-                f'{comments}</div>{note}</div>')
-        return shot(doc(body, LINEAR_CSS), Path(args.out), args.width)
-
-    issues = linear("""query($teamId: ID!) { issues(first: 50, filter: { team: { id: { eq: $teamId } } },
-        orderBy: updatedAt) { nodes { identifier title state { name } labels { nodes { name color } } } } }""",
-                      {"teamId": team["id"]})["issues"]["nodes"]
-    order = ["Backlog", "Todo", "In Progress", "Needs Human", "In Review", "Done", "Canceled"]
-    states = sorted({s["name"] for s in team["states"]["nodes"]}, key=lambda n: order.index(n) if n in order else 99)
-    cols = []
-    for st in states:
-        if st == "Duplicate":
-            continue
-        cards = "".join(
-            f'<div class="card"><div class="id">{i["identifier"]}</div>{html.escape(i["title"])}<br>'
-            + "".join(f'<span class="lb" style="background:{l["color"]}">{html.escape(l["name"])}</span>'
-                      for l in i["labels"]["nodes"]) + "</div>"
-            for i in issues if i["state"]["name"] == st)
-        cols.append(f'<div class="col"><h2>{st}</h2>{cards}</div>')
+    issues = linear(BOARD_QUERY, {"teamId": team["id"]})["issues"]["nodes"]
+    states = sorted({s["name"] for s in team["states"]["nodes"]} - {"Duplicate"},
+                    key=lambda n: BOARD_ORDER.index(n) if n in BOARD_ORDER else 99)
+    cols = "".join(
+        f'<div class="col"><h2>{st}</h2>'
+        + "".join(f'<div class="card"><div class="id">{i["identifier"]}</div>{html.escape(i["title"])}<br>'
+                  f'{_label_spans(i["labels"]["nodes"])}</div>' for i in issues if i["state"]["name"] == st)
+        + "</div>" for st in states)
     labels = "".join(f'<span class="chip">{html.escape(l["name"])}</span>' for l in team["labels"]["nodes"])
-    body = (f'<div class="wrap"><h1>Linear 팀 {team["key"]} ({html.escape(team["name"])})</h1>'
+    return (f'<div class="wrap"><h1>Linear 팀 {team["key"]} ({html.escape(team["name"])})</h1>'
             f'<div style="margin-bottom:10px;font-size:12px">라벨: {labels}</div>'
-            f'<div class="board">{"".join(cols)}</div>{note}</div>')
+            f'<div class="board">{cols}</div>{LINEAR_NOTE}</div>')
+
+
+def cmd_linear(args):
+    body = issue_html(args.issue, args.as_of) if args.issue else board_html()
     shot(doc(body, LINEAR_CSS), Path(args.out), args.width)
 
 

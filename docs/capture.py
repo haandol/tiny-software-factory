@@ -8,18 +8,24 @@
   term   <제목> <출력 PNG> [--file 텍스트]   터미널 출력을 이미지로 (기본은 stdin)
   sheet  <평가 폴더> <출력 PNG> [--title]    평가 시트를 다시 그린다
   grid   <출력 PNG> --row "라벨|경로:캡션|경로:캡션" ...   이미지 비교표
-  linear <출력 PNG> [--issue SWF-3]          Linear API로 읽은 팀 상태 또는 이슈 하나 (UI 스크린샷이 아니다)
+  linear <출력 PNG> [--issue SWF-3 [--as-of 시각]]  Linear API로 읽은 팀 상태 또는 이슈 하나 (UI 스크린샷이 아니다)
   page   <URL> <출력 PNG> [--previz]         웹 페이지 스크린샷 (--previz: 뷰어 ready까지 기다린다)
   agent  <attempt-N.jsonl> <출력 PNG>        Claude Code 실행 기록의 도구 호출 타임라인
   run    <run.json> <출력 PNG>               실행 하나의 시도별 수용 조건·점수·비용
+
+공개 자료에 이 머신의 정보가 남지 않게, 그리기 전에 로컬 경로·AWS 프로필 이름·Linear 워크스페이스 주소를
+일반 문자열로 바꾼다 (private_rules). 바꿀 문자열은 실행할 때 이 머신에서 구하므로 저장소에는 남지 않는다.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import configparser
+import functools
 import html
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -38,11 +44,38 @@ h1{font-size:18px;margin:0 0 12px}
 """
 
 
+def aws_profiles() -> list[str]:
+    names = set()
+    for f, prefix in (("config", "profile "), ("credentials", "")):
+        c = configparser.ConfigParser()
+        c.read(Path.home() / ".aws" / f)
+        names |= {s.removeprefix(prefix).strip() for s in c.sections() if s.startswith(prefix)}
+    return sorted(names - {"default"})
+
+
+@functools.cache
+def private_rules() -> list[tuple[re.Pattern, str]]:
+    """(찾을 패턴, 대체 문자열). 저장소 경로는 $REPO, 홈은 ~, default 외 AWS 프로필은 other-profile로 바꾼다."""
+    rules = [(re.escape(str(ROOT)), "$REPO"), (re.escape(str(Path.home())), "~"),
+             (re.escape(f"/run/user/{os.getuid()}"), "$XDG_RUNTIME_DIR")]
+    if os.environ.get("LINEAR_API_KEY"):
+        org = linear("{ organization { urlKey } }")["organization"]["urlKey"]
+        rules.append((re.escape(f"linear.app/{org}/"), "linear.app/your-workspace/"))
+    rules += [(rf"(?<![\w.-]){re.escape(n)}(?![\w.-])", "other-profile") for n in aws_profiles()]
+    return [(re.compile(p), r) for p, r in rules]
+
+
+def scrub(text: str) -> str:
+    for pattern, repl in private_rules():
+        text = pattern.sub(lambda _: repl, text)
+    return text
+
+
 def shot(html_doc: str, out: Path, width: int = 1100) -> None:
     lab = Lab()
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
-        lab.screenshot_html(html_doc, out, width)
+        lab.screenshot_html(scrub(html_doc), out, width)
     finally:
         lab.close()
     print(out)
@@ -124,20 +157,30 @@ def cmd_linear(args):
     if args.issue:
         data = linear("""query($id: String!) { issue(id: $id) {
             identifier title description state { name } labels { nodes { name color } }
-            comments(first: 50) { nodes { body createdAt user { name } } } } }""", {"id": args.issue})["issue"]
+            comments(first: 50) { nodes { body createdAt user { name } } }
+            history(first: 50) { nodes { createdAt toState { name } } } } }""", {"id": args.issue})["issue"]
         labels = "".join(f'<span class="lb" style="background:{l["color"]}">{html.escape(l["name"])}</span>'
                          for l in data["labels"]["nodes"])
         import markdown
         from datetime import datetime
 
-        def when(ts):  # Linear는 UTC로 준다. 로컬 시각으로 보인다
-            return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        def at(ts):  # Linear는 UTC로 준다. 로컬 시각으로 본다
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
+
+        # --as-of: 그 시각까지의 상태와 댓글만 그린다 (캡처 뒤에 이슈가 바뀌었을 때 캡처 시점을 다시 그린다)
+        cutoff = datetime.fromisoformat(args.as_of).astimezone() if args.as_of else None
+        state = data["state"]["name"]
+        if cutoff:
+            moves = sorted((at(h["createdAt"]), h["toState"]["name"]) for h in data["history"]["nodes"]
+                           if h["toState"] and at(h["createdAt"]) <= cutoff)
+            state = moves[-1][1] if moves else state
         comments = "".join(
-            f'<div class="cm"><div class="who">{when(c["createdAt"])}</div>'
+            f'<div class="cm"><div class="who">{at(c["createdAt"]).strftime("%Y-%m-%d %H:%M %Z")}</div>'
             f'{markdown.markdown(re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"`[첨부 이미지: \1]`", c["body"]), extensions=["tables", "fenced_code"])}</div>'
-            for c in sorted(data["comments"]["nodes"], key=lambda c: c["createdAt"]))
+            for c in sorted(data["comments"]["nodes"], key=lambda c: c["createdAt"])
+            if not cutoff or at(c["createdAt"]) <= cutoff)
         body = (f'<div class="wrap"><h1>Linear 이슈 {data["identifier"]}</h1><div class="issue">'
-                f'<b>{html.escape(data["title"])}</b> <span class="chip">{data["state"]["name"]}</span>{labels}'
+                f'<b>{html.escape(data["title"])}</b> <span class="chip">{state}</span>{labels}'
                 f'<div class="desc">{markdown.markdown(data["description"] or "", extensions=["tables"])}</div>'
                 f'{comments}</div>{note}</div>')
         return shot(doc(body, LINEAR_CSS), Path(args.out), args.width)
@@ -285,6 +328,7 @@ def main():
     p.add_argument("--title"); p.add_argument("--note"); p.add_argument("--width", type=int, default=0)
     p.add_argument("--img-width", type=int, default=280)
     p = sub.add_parser("linear"); p.add_argument("out"); p.add_argument("--issue"); p.add_argument("--width", type=int, default=1400)
+    p.add_argument("--as-of", help="--issue와 함께: 이 시각(로컬, ISO)까지의 상태와 댓글로 그린다")
     p = sub.add_parser("page"); p.add_argument("url"); p.add_argument("out"); p.add_argument("--previz", action="store_true")
     p.add_argument("--width", type=int, default=1100); p.add_argument("--height", type=int, default=700)
     p.add_argument("--full", action="store_true")

@@ -13,6 +13,8 @@ END_MARGIN = 6.0              # 선분 양 끝(모서리 만나는 곳)은 이�
 LINE_RADIUS = 22.0            # Codex 벽 선은 둘레 이만큼 안에서 경계를 찾는다
 CORNER_RADIUS = 14.0          # 벽 모서리 세로선은 바닥선(·윗변) 교점 둘레 이만큼에서 찾는다
 VERT_RADIUS = 8.0             # 물체 옆선은 bbox 옆변에서 이만큼 안에서 찾는다
+VERT_WIDEN = 1.5              # 거기서 못 찾으면 이 배만큼 넓혀 한 번 더 찾는다. Codex bbox 옆변은 실루엣에서 10픽셀쯤
+                              # 벗어나기도 해서, 그 1픽셀 차이로 옆선이 요청마다 잡히기도 하고 안 잡히기도 했다
 VERT_TRIM = 0.18              # 물체 위아래(원기둥 뚜껑·상자 윗면)는 이 비율만큼 빼고 잰다
 MIN_CONTRAST = 2.0            # 둘레보다 이만큼 뚜렷해야 경계로 본다
 MIN_SUPPORT = 0.2             # 잰 칸 가운데 이만큼에서 경계점이 잡혀야 쓴다
@@ -183,9 +185,13 @@ def object_verticals(E: EdgeImage, model: RoomModel, x: np.ndarray, objects: lis
             if u < 4 or u > model.W - 4:
                 continue
             anchor = _side_anchor(model, x, box, left)
-            s = None if anchor is None else _object_side(E, model, x, anchor, y0, y1, radius, nearer)
-            if accepted(s, min_support=0.5, min_length=0.4 * h):
-                out.append(s)
+            if anchor is None:
+                continue
+            for r in (radius, radius * VERT_WIDEN):
+                s = _object_side(E, model, x, anchor, y0, y1, r, nearer)
+                if accepted(s, min_support=0.5, min_length=0.4 * h):
+                    out.append(s)
+                    break
     return out
 
 

@@ -1,5 +1,5 @@
 """사진으로 카메라 맞추기의 전체 흐름: 벽 경계(없으면 물체 옆선) → 타원·상자 선분·지평선 더해 다시 맞추기
-→ 흐린 벽 선 검정 → 화각 프로파일."""
+→ 흐린 벽 선 검정 → 화각 프로파일 → (사진이 화각을 정하지 못하면) 고정 사전값의 화각 사후 평균."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from ..edges import EdgeImage
 from .boxes import consensus_boxes
 from .boxlines import box_lines
 from .fit import FitResult, Prior, obs_line, total_cost
-from .fov import fov_interval, fov_profile, refit_with_tops
+from .fov import fov_interval, fov_posterior, fov_profile, refit_with_tops
 from .model import RoomModel
 from .observe import VERT_RADIUS, object_verticals
 from .samples import codex_horizon, sample_prior
@@ -48,7 +48,13 @@ def image_camera(analyses: list[dict], W: int, H: int, img: np.ndarray, log=None
     lo, hi = fov_interval(profile)
     if log:
         _log_profile(log, profile, lo, hi, s.fit, s.tops, s.prior, s.groups)
-    return _camera(s.fit, s.tops, lo, hi, s.objects_only, s.groups)
+    fit = s.fit
+    if hi - lo > DETERMINED_DEG:                  # 사진이 화각을 정하지 못했다: Codex 화각 대신 고정 사전값의 사후 평균
+        x, sd = fov_posterior(s.fit, s.prior)
+        if log:
+            log(f"  화각 사후 평균 {x[0]:.1f} (폭 {sd:.1f}, 맞춘 해 {s.fit.fov:.1f})")
+        fit = FitResult(x, s.fit.model, s.fit.obs, s.fit.rms, s.fit.supported)
+    return _camera(fit, s.tops, lo, hi, s.objects_only, s.groups)
 
 
 def _solve(analyses: list[dict], W: int, H: int, img: np.ndarray, E: EdgeImage, prior: Prior,

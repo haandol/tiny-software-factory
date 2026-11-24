@@ -135,6 +135,8 @@ def parabolic_peak(S: np.ndarray, rows: np.ndarray, k: np.ndarray):
 
 WINDOW = 5                   # 경계점 하나는 앞뒤 이만큼 칸(STEP 간격)의 단면을 부호째 평균해 잡는다
 OFF_STEP = 0.5               # 단면을 재는 법선 방향 간격 (픽셀)
+REFINE_ROUNDS = 12           # 맞춘 직선을 따라 단면을 다시 재는 횟수 (허프 격자 직선에 끌리지 않게)
+REFINE_TOL_PX = 0.02         # 다시 맞춘 직선이 양 끝에서 이만큼도 안 움직이면 멈춘다
 
 
 @dataclass
@@ -232,7 +234,46 @@ def snap(E: EdgeImage, p0, p1, radius: float, boxes: list = (), fine: float = 1.
     pr = _profiles(E, p0, p1, L, radius, fine, boxes)
     if pr.usable.sum() * STEP < min_len:
         return None
-    o_best = _best_line(pr, radius, max_tilt)
+    seg = _measure(pr, _best_line(pr, radius, max_tilt), fine)
+    if seg is None:
+        return None
+    return _refine(E, seg, p0, p1, L, fine, boxes, min_len)
+
+
+def _refine(E: EdgeImage, seg: Segment, p0: np.ndarray, p1: np.ndarray, L: float, fine: float, boxes,
+            min_len: float) -> Segment:
+    """4) 찾은 직선을 따라 단면을 다시 재어 경계점을 다시 잡는다. 허프 탐색의 직선은 1픽셀 격자 위에 있어서,
+    그 직선에 맞춰 단면을 평균하면 짧은 선분의 방향이 격자 직선 쪽으로 끌린다 (같은 경계도 예상 선이 조금 다르면
+    방향이 0.3°쯤 달라졌다). 맞춘 직선과 단면을 잰 직선의 중간으로 옮겨 가며, 단면을 잰 직선이 더 움직이지
+    않을 때까지 되풀이한다 (끝이 휘어 두 직선 사이를 오가는 경계도 그 가운데로 모인다)."""
+    n, c = seg.normal, seg.c
+    for _ in range(REFINE_ROUNDS):
+        q0, q1 = (p - (n @ p - c) * n for p in (p0, p1))
+        pr = _profiles(E, q0, q1, L, 0.0, fine, boxes)
+        if pr.usable.sum() * STEP < min_len:
+            break
+        new = _measure(pr, np.zeros(len(pr.t)), fine)
+        if new is None:
+            break
+        seg = new
+        moved = max(abs(float(new.normal @ q) - new.c) for q in (q0, q1))
+        if moved < REFINE_TOL_PX:
+            break
+        n, c = _halfway(n, (q0 + q1) / 2, new)
+    return seg
+
+
+def _halfway(n: np.ndarray, q: np.ndarray, seg: Segment) -> tuple[np.ndarray, float]:
+    """법선 n으로 점 q를 지나는 직선과 seg 직선의 중간 직선 (n, c)."""
+    sn = seg.normal if seg.normal @ n >= 0 else -seg.normal
+    sc = seg.c if seg.normal @ n >= 0 else -seg.c
+    m = (n + sn) / np.linalg.norm(n + sn)
+    mid = q + 0.5 * (sc - float(sn @ q)) * sn
+    return m, float(m @ mid)
+
+
+def _measure(pr: _Profiles, o_best: np.ndarray, fine: float) -> Segment | None:
+    """3) 칸마다 o_best 선에 맞춘 단면에서 경계점을 잡아 직선을 맞춘 선분. 점이 모자라면 None."""
     rel = np.arange(-fine - 5, fine + 5.01, OFF_STEP)
     S = _aligned_strength(pr, o_best, rel)
     pts, s1, is_peak, bg_level = _edge_points(pr, o_best, S, rel, fine)

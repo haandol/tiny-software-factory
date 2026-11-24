@@ -1,0 +1,11 @@
+[SWF-10] Canceled → 작업 공간 정리
+[SWF-11] 선점: 안정성 측정 표본을 늘리고 지표별 측정 잡음을 평가 정책에 기록한다
+[SWF-11] 결과: done (Claude Code $0.70) → var/runs/SWF-11-20261124-085119/run.json
+발견 루프: main 33a3085 평가
+발견 루프: holdout:stability.fidelity_delta 0.78는 목표 0.5와의 차이가 측정 잡음 0.979 안이라 건너뛴다
+발견 루프: SWF-12 생성 — [auto] 같은 장면 재생성 시 화각 차 개선: 홀드아웃 0.98 → 0.2 (최종 목표 0.2)
+[SWF-12] 선점: [auto] 같은 장면 재생성 시 화각 차 개선: 홀드아웃 0.98 → 0.2 (최종 목표 0.2)
+[SWF-12] eval 통과 → 병합과 배포 (커밋 1cccb89)
+[SWF-12] 결과: done (Claude Code $5.03, Codex 호출 36회) → var/runs/SWF-12-20261124-090329/run.json
+발견 루프: main 4d26e2e 평가
+발견 루프: main 4d26e2e은 최종 목표를 모두 충족한다. 이슈를 만들지 않는다

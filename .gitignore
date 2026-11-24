@@ -11,3 +11,6 @@ product/
 __pycache__/
 vendor/
 docs/guide/guide.html
+
+# 공개하지 않는 참고 문서
+research.md

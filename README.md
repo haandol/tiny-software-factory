@@ -11,6 +11,7 @@
 | 자료 | 내용 |
 |---|---|
 | [docs/guide/00-overview.md](docs/guide/00-overview.md) | 전체 구조와 단계별 소개 자료의 시작. 단계마다 실제 실행 기록과 스크린샷이 있다 |
+| [SPEC.md](SPEC.md) | 현재 시스템의 명세 (OpenAI Symphony SPEC의 형식). 도메인 모델, 상태 기계, 평가와 수용 규칙, 참조 알고리즘, 알려진 한계 |
 | [reports/execution-plan/report.md](reports/execution-plan/report.md) | 구현 전에 세운 실행 계획 |
 | [reports/symphony-compare/report.md](reports/symphony-compare/report.md) | OpenAI Symphony 명세와 이 팩토리의 비교 |
 | [reports/factory-plan/report.md](reports/factory-plan/report.md) | 처음 세운 아키텍처 계획 (이후 여러 번 바뀌었다) |
